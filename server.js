@@ -5,7 +5,7 @@ const axios = require('axios');
 
 const app = express();
 app.use(cors({
-    origin: 'https://www.alonisthe.dev/asdfmarket', // For testing. In production, change '*' to 'https://your-squarespace-site.com'
+    origin: 'https://www.alonisthe.dev', // For testing. In production, change '*' to 'https://your-squarespace-site.com'
     methods: ['GET', 'POST']
 }));
 app.use(express.json());
