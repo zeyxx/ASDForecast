@@ -29,6 +29,7 @@ const FEE_PERCENT = 0.0552;
 const RESERVE_SOL = 0.02;
 const SWEEP_TARGET = 0.05;
 const FRAME_DURATION = 15 * 60 * 1000; 
+const BACKEND_VERSION = "75.0"; // Updated to v75
 
 // --- PERSISTENCE ---
 const RENDER_DISK_PATH = '/var/data';
@@ -47,6 +48,17 @@ const SIGS_FILE = path.join(DATA_DIR, 'signatures.log');
 const QUEUE_FILE = path.join(DATA_DIR, 'payout_queue.json'); 
 
 console.log(`> [SYS] Persistence Root: ${DATA_DIR}`);
+
+// --- HELPER: ATOMIC WRITE ---
+async function atomicWrite(filePath, data) {
+    const tempPath = `${filePath}.tmp`;
+    try {
+        await fs.writeFile(tempPath, JSON.stringify(data));
+        await fs.rename(tempPath, filePath); 
+    } catch (e) {
+        console.error(`> [IO] Write Error on ${filePath}:`, e.message);
+    }
+}
 
 // --- KEY MANAGEMENT ---
 let houseKeypair;
@@ -106,29 +118,29 @@ function loadGlobalState() {
 }
 
 async function saveSystemState() {
-    try {
-        await fs.writeFile(STATE_FILE, JSON.stringify({
-            candleOpen: gameState.candleOpen,
-            candleStartTime: gameState.candleStartTime,
+    await atomicWrite(STATE_FILE, {
+        candleOpen: gameState.candleOpen,
+        candleStartTime: gameState.candleStartTime,
+        poolShares: gameState.poolShares,
+        recentTrades: gameState.recentTrades,
+        sharePriceHistory: gameState.sharePriceHistory,
+        isPaused: gameState.isPaused
+    });
+    
+    await atomicWrite(STATS_FILE, globalStats);
+
+    if (gameState.candleStartTime > 0) {
+        const frameFile = path.join(FRAMES_DIR, `frame_${gameState.candleStartTime}.json`);
+        await atomicWrite(frameFile, {
+            id: gameState.candleStartTime,
+            startTime: gameState.candleStartTime,
+            endTime: gameState.candleStartTime + FRAME_DURATION,
+            open: gameState.candleOpen,
             poolShares: gameState.poolShares,
-            recentTrades: gameState.recentTrades,
-            sharePriceHistory: gameState.sharePriceHistory,
-            isPaused: gameState.isPaused
-        }));
-        await fs.writeFile(STATS_FILE, JSON.stringify(globalStats));
-        if (gameState.candleStartTime > 0) {
-            const frameFile = path.join(FRAMES_DIR, `frame_${gameState.candleStartTime}.json`);
-            await fs.writeFile(frameFile, JSON.stringify({
-                id: gameState.candleStartTime,
-                startTime: gameState.candleStartTime,
-                endTime: gameState.candleStartTime + FRAME_DURATION,
-                open: gameState.candleOpen,
-                poolShares: gameState.poolShares,
-                bets: [...gameState.bets],
-                status: gameState.isPaused ? 'CANCELLED' : 'ACTIVE'
-            }));
-        }
-    } catch (e) { console.error("> [ERR] Save Error:", e); }
+            bets: [...gameState.bets],
+            status: gameState.isPaused ? 'CANCELLED' : 'ACTIVE'
+        });
+    }
 }
 
 async function getUser(pubKey) {
@@ -143,7 +155,8 @@ async function getUser(pubKey) {
 
 async function saveUser(pubKey, data) {
     try {
-        await fs.writeFile(path.join(USERS_DIR, `user_${pubKey}.json`), JSON.stringify(data));
+        const file = path.join(USERS_DIR, `user_${pubKey}.json`);
+        await atomicWrite(file, data);
     } catch (e) {}
 }
 
@@ -157,7 +170,10 @@ async function updateASDFPurchases() {
         const signaturesDetails = await connection.getSignaturesForAddress(FEE_WALLET, options);
         if (signaturesDetails.length === 0) return;
         globalStats.lastASDFSignature = signaturesDetails[0].signature;
-        const txs = await connection.getParsedTransactions(signaturesDetails.map(s => s.signature), { maxSupportedTransactionVersion: 0 });
+        const txs = await connection.getParsedTransactions(
+            signaturesDetails.map(s => s.signature), 
+            { maxSupportedTransactionVersion: 0 }
+        );
         let newPurchasedAmount = 0;
         for (const tx of txs) {
             if (!tx || !tx.meta) continue;
@@ -203,7 +219,6 @@ async function processPayoutQueue() {
                 if (type === 'USER_PAYOUT' || type === 'USER_REFUND') {
                     for (const item of recipients) {
                         const uData = await getUser(item.pubKey);
-                        // Idempotency Check (Skip if already paid/refunded)
                         if (uData.frameLog && uData.frameLog[frameId]) {
                             const entry = uData.frameLog[frameId];
                             if (type === 'USER_PAYOUT' && entry.payoutTx) continue;
@@ -238,14 +253,10 @@ async function processPayoutQueue() {
                                     await saveUser(item.pubKey, uData);
                                 }
                             }
-                        }
-                        // [NEW] Handle Refund Recording
-                        else if (type === 'USER_REFUND') {
+                        } else if (type === 'USER_REFUND') {
                             for (const item of validRecipients) {
                                 const uData = await getUser(item.pubKey);
-                                // If log doesn't exist (e.g. first bet of frame cancelled immediately), create stub
                                 if (!uData.frameLog[frameId]) uData.frameLog[frameId] = { result: 'CANCELLED', time: Date.now() };
-                                
                                 uData.frameLog[frameId].refundTx = sig;
                                 await saveUser(item.pubKey, uData);
                             }
@@ -256,9 +267,9 @@ async function processPayoutQueue() {
 
             queueData.shift();
             processedCount++;
-            if (processedCount % 5 === 0) await fs.writeFile(QUEUE_FILE, JSON.stringify(queueData));
+            if (processedCount % 5 === 0) await atomicWrite(QUEUE_FILE, queueData);
         }
-        await fs.writeFile(QUEUE_FILE, JSON.stringify(queueData));
+        await atomicWrite(QUEUE_FILE, queueData);
     } catch (e) { console.error("> [QUEUE] Error:", e); }
     finally { release(); }
 }
@@ -316,11 +327,10 @@ async function queuePayouts(frameId, result, bets, totalVolume) {
     let existingQueue = [];
     try { if (fsSync.existsSync(QUEUE_FILE)) existingQueue = JSON.parse(await fs.readFile(QUEUE_FILE, 'utf8')); } catch(e) {}
     const newQueue = existingQueue.concat(queue);
-    await fs.writeFile(QUEUE_FILE, JSON.stringify(newQueue));
+    await atomicWrite(QUEUE_FILE, newQueue);
     processPayoutQueue();
 }
 
-// --- UPDATED REFUND LOGIC ---
 async function processRefunds(frameId, bets) {
     if (!houseKeypair || bets.length === 0) return;
     const refunds = {};
@@ -333,18 +343,16 @@ async function processRefunds(frameId, bets) {
     });
     const queue = [];
     if (totalFee > 0) queue.push({ type: 'FEE', recipients: [{ pubKey: FEE_WALLET.toString(), amount: Math.floor(totalFee) }] });
-    
     const recipients = Object.entries(refunds).map(([pub, amt]) => ({ pubKey: pub, amount: amt }));
     const BATCH_SIZE = 15;
     for (let i = 0; i < recipients.length; i += BATCH_SIZE) {
         const batch = recipients.slice(i, i + BATCH_SIZE);
-        // Pass actual frameId here, but use USER_REFUND type for queue handler logic
         queue.push({ type: 'USER_REFUND', frameId: frameId, recipients: batch }); 
     }
     let existingQueue = [];
     try { if (fsSync.existsSync(QUEUE_FILE)) existingQueue = JSON.parse(await fs.readFile(QUEUE_FILE, 'utf8')); } catch(e) {}
     const newQueue = existingQueue.concat(queue);
-    await fs.writeFile(QUEUE_FILE, JSON.stringify(newQueue));
+    await atomicWrite(QUEUE_FILE, newQueue);
     processPayoutQueue();
 }
 
@@ -388,11 +396,12 @@ async function closeFrame(closePrice, closeTime) {
             result: result, sharesUp: realSharesUp, sharesDown: realSharesDown,
             totalSol: frameSol, winners: winnerCount, payout: payoutTotal
         };
-        historySummary.unshift(frameRecord); 
-        await fs.writeFile(HISTORY_FILE, JSON.stringify(historySummary));
+        
+        historySummary.unshift(frameRecord);
+        if (historySummary.length > 100) historySummary = historySummary.slice(0, 100);
+        await atomicWrite(HISTORY_FILE, historySummary);
 
         const betsSnapshot = [...gameState.bets];
-
         const userPositions = {};
         betsSnapshot.forEach(bet => {
             if (!userPositions[bet.user]) userPositions[bet.user] = { up: 0, down: 0, sol: 0 };
@@ -437,11 +446,11 @@ async function closeFrame(closePrice, closeTime) {
     } finally { release(); }
 }
 
-// --- ORACLE ---
 async function updatePrice() {
     try {
         const response = await axios.get('https://api.coingecko.com/api/v3/simple/price', {
-            params: { ids: 'solana', vs_currencies: 'usd', x_cg_demo_api_key: COINGECKO_API_KEY }
+            params: { ids: 'solana', vs_currencies: 'usd', x_cg_demo_api_key: COINGECKO_API_KEY },
+            timeout: 5000
         });
         
         if (response.data.solana) {
@@ -492,51 +501,53 @@ setInterval(updatePrice, 10000);
 updatePrice(); 
 processPayoutQueue();
 
-// --- ENDPOINTS ---
 app.get('/api/state', async (req, res) => {
-    const release = await stateMutex.acquire();
-    try {
-        const now = new Date();
-        const nextWindowStart = getCurrentWindowStart() + FRAME_DURATION;
-        const msUntilClose = nextWindowStart - now.getTime();
-        const priceChange = gameState.price - gameState.candleOpen;
-        const percentChange = gameState.candleOpen ? (priceChange / gameState.candleOpen) * 100 : 0;
-        const currentVolume = gameState.bets.reduce((acc, b) => acc + b.costSol, 0);
-        const totalShares = gameState.poolShares.up + gameState.poolShares.down;
-        const priceUp = (gameState.poolShares.up / totalShares) * PRICE_SCALE;
-        const priceDown = (gameState.poolShares.down / totalShares) * PRICE_SCALE;
-        const nowTime = Date.now();
-        const history = gameState.sharePriceHistory || [];
-        const baseline = { up: 0.05, down: 0.05 };
-        const oneMinAgo = history.find(x => x.t >= nowTime - 60000) || baseline;
-        const fiveMinAgo = history.find(x => x.t >= nowTime - 300000) || baseline;
-        function getPercentChange(current, old) { if (!old || old === 0) return 0; return ((current - old) / old) * 100; }
-        const changes = { up1m: getPercentChange(priceUp, oneMinAgo.up), up5m: getPercentChange(priceUp, fiveMinAgo.up), down1m: getPercentChange(priceDown, oneMinAgo.down), down5m: getPercentChange(priceDown, fiveMinAgo.down), };
-        const uniqueUsers = new Set(gameState.bets.map(b => b.user)).size;
-        
-        const userKey = req.query.user;
-        let myStats = null;
-        let activePosition = null;
+    // LOCK-FREE READ
+    const now = new Date();
+    const nextWindowStart = getCurrentWindowStart() + FRAME_DURATION;
+    const msUntilClose = nextWindowStart - now.getTime();
+    const priceChange = gameState.price - gameState.candleOpen;
+    const percentChange = gameState.candleOpen ? (priceChange / gameState.candleOpen) * 100 : 0;
+    const currentVolume = gameState.bets.reduce((acc, b) => acc + b.costSol, 0);
 
-        if (userKey) {
-            myStats = await getUser(userKey);
-            const userBets = gameState.bets.filter(b => b.user === userKey);
-            activePosition = {
-                upShares: userBets.filter(b => b.direction === 'UP').reduce((a, b) => a + b.shares, 0),
-                downShares: userBets.filter(b => b.direction === 'DOWN').reduce((a, b) => a + b.shares, 0),
-                upSol: userBets.filter(b => b.direction === 'UP').reduce((a, b) => a + b.costSol, 0),
-                downSol: userBets.filter(b => b.direction === 'DOWN').reduce((a, b) => a + b.costSol, 0),
-                wageredSol: userBets.reduce((a, b) => a + b.costSol, 0)
-            };
-        }
-        res.json({
-            price: gameState.price, openPrice: gameState.candleOpen, candleStartTime: gameState.candleStartTime, candleEndTime: gameState.candleStartTime + FRAME_DURATION,
-            change: percentChange, msUntilClose: msUntilClose, currentVolume: currentVolume, uniqueUsers: uniqueUsers,
-            platformStats: globalStats, isPaused: gameState.isPaused,
-            market: { priceUp, priceDown, sharesUp: gameState.poolShares.up, sharesDown: gameState.poolShares.down, changes: changes },
-            history: historySummary, recentTrades: gameState.recentTrades, userStats: myStats, activePosition: activePosition 
-        });
-    } finally { release(); }
+    const totalShares = gameState.poolShares.up + gameState.poolShares.down;
+    const priceUp = (gameState.poolShares.up / totalShares) * PRICE_SCALE;
+    const priceDown = (gameState.poolShares.down / totalShares) * PRICE_SCALE;
+    const nowTime = Date.now();
+    const history = gameState.sharePriceHistory || [];
+    const baseline = { up: 0.05, down: 0.05 };
+    const oneMinAgo = history.find(x => x.t >= nowTime - 60000) || baseline;
+    const fiveMinAgo = history.find(x => x.t >= nowTime - 300000) || baseline;
+    function getPercentChange(current, old) { if (!old || old === 0) return 0; return ((current - old) / old) * 100; }
+    const changes = {
+        up1m: getPercentChange(priceUp, oneMinAgo.up),
+        up5m: getPercentChange(priceUp, fiveMinAgo.up),
+        down1m: getPercentChange(priceDown, oneMinAgo.down),
+        down5m: getPercentChange(priceDown, fiveMinAgo.down),
+    };
+    const uniqueUsers = new Set(gameState.bets.map(b => b.user)).size;
+    const userKey = req.query.user;
+    let myStats = null;
+    let activePosition = null;
+    if (userKey) {
+        myStats = await getUser(userKey);
+        const userBets = gameState.bets.filter(b => b.user === userKey);
+        activePosition = {
+            upShares: userBets.filter(b => b.direction === 'UP').reduce((a, b) => a + b.shares, 0),
+            downShares: userBets.filter(b => b.direction === 'DOWN').reduce((a, b) => a + b.shares, 0),
+            upSol: userBets.filter(b => b.direction === 'UP').reduce((a, b) => a + b.costSol, 0),
+            downSol: userBets.filter(b => b.direction === 'DOWN').reduce((a, b) => a + b.costSol, 0),
+            wageredSol: userBets.reduce((a, b) => a + b.costSol, 0)
+        };
+    }
+    res.json({
+        price: gameState.price, openPrice: gameState.candleOpen, candleStartTime: gameState.candleStartTime, candleEndTime: gameState.candleStartTime + FRAME_DURATION,
+        change: percentChange, msUntilClose: msUntilClose, currentVolume: currentVolume, uniqueUsers: uniqueUsers,
+        platformStats: globalStats, isPaused: gameState.isPaused,
+        market: { priceUp, priceDown, sharesUp: gameState.poolShares.up, sharesDown: gameState.poolShares.down, changes: changes },
+        history: historySummary, recentTrades: gameState.recentTrades, userStats: myStats, activePosition: activePosition,
+        backendVersion: BACKEND_VERSION
+    });
 });
 
 app.post('/api/verify-bet', async (req, res) => {
@@ -593,6 +604,7 @@ app.post('/api/verify-bet', async (req, res) => {
         globalStats.totalVolume += solAmount;
         processedSignatures.add(signature);
         await fs.appendFile(path.join(DATA_DIR, 'signatures.log'), signature + '\n');
+
         await saveSystemState();
         res.json({ success: true, shares: sharesReceived, price: price });
 
@@ -612,13 +624,11 @@ app.post('/api/admin/cancel-frame', async (req, res) => {
             const betsToRefund = [...gameState.bets];
             const frameRecord = { id: gameState.candleStartTime, time: new Date(gameState.candleStartTime).toISOString(), result: "CANCELLED", totalSol: 0, winners: 0, payout: 0 };
             historySummary.unshift(frameRecord);
-            await fs.writeFile(HISTORY_FILE, JSON.stringify(historySummary));
+            await atomicWrite(HISTORY_FILE, historySummary);
 
             gameState.bets = [];
             gameState.poolShares = { up: 50, down: 50 };
             await saveSystemState();
-            
-            // Pass frame ID for logging refunds to user files
             processRefunds(gameState.candleStartTime, betsToRefund);
         }
         res.json({ success: true, message: "Frame Cancelled. Market Paused." });
@@ -626,4 +636,4 @@ app.post('/api/admin/cancel-frame', async (req, res) => {
     finally { release(); }
 });
 
-app.listen(PORT, () => { console.log(`> ASDForecast Engine v60 (Refund Link) running on ${PORT}`); });
+app.listen(PORT, () => { console.log(`> ASDForecast Engine v${BACKEND_VERSION} running on ${PORT}`); });
