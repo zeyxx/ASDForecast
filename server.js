@@ -19,6 +19,7 @@ const SOLANA_NETWORK = 'https://api.devnet.solana.com';
 const HOUSE_ADDRESS = "H3tY5a5n7C5h2jK8n3m4n5b6v7c8x9z1a2s3d4f5g6h";
 const COINGECKO_API_KEY = "CG-KsYLbF8hxVytbPTNyLXe7vWA";
 const STORAGE_FILE = path.join(__dirname, 'storage.json');
+const PRICE_SCALE = 0.1; // Sum of prices will equal 0.1 SOL
 
 // --- PERSISTENCE ---
 let gameState = {
@@ -26,7 +27,7 @@ let gameState = {
     candleOpen: 0,
     candleStartTime: 0,
     bets: [],
-    // UPDATED: Start with 100 Shares each (Virtual Liquidity)
+    // Start with 100 Shares each (Virtual Liquidity)
     poolShares: { up: 100, down: 100 } 
 };
 
@@ -37,7 +38,6 @@ function loadState() {
             gameState.bets = data.bets || [];
             gameState.candleOpen = data.candleOpen || 0;
             gameState.candleStartTime = data.candleStartTime || 0;
-            // Fallback if older save file exists
             gameState.poolShares = data.poolShares || { up: 100, down: 100 };
             console.log(`> [SYS] State loaded.`);
         }
@@ -106,12 +106,13 @@ app.get('/api/state', (req, res) => {
     const priceChange = gameState.price - gameState.candleOpen;
     const percentChange = gameState.candleOpen ? (priceChange / gameState.candleOpen) * 100 : 0;
 
-    // CALCULATE DYNAMIC PRICES (Proportional)
+    // CALCULATE DYNAMIC PRICES (Scaled by 0.1)
     const totalShares = gameState.poolShares.up + gameState.poolShares.down;
     
-    // Price = Share of Pool
-    const priceUp = gameState.poolShares.up / totalShares;
-    const priceDown = gameState.poolShares.down / totalShares;
+    // Price = (Share of Pool) * 0.1
+    // Example: 100/200 * 0.1 = 0.5 * 0.1 = 0.05 SOL
+    const priceUp = (gameState.poolShares.up / totalShares) * PRICE_SCALE;
+    const priceDown = (gameState.poolShares.down / totalShares) * PRICE_SCALE;
 
     res.json({
         price: gameState.price,
@@ -155,22 +156,22 @@ app.post('/api/verify-bet', async (req, res) => {
 
         const solAmount = lamports / 1000000000;
 
-        // CALCULATE PRICE & SHARES
+        // CALCULATE SHARES PURCHASED
         const totalShares = gameState.poolShares.up + gameState.poolShares.down;
-        let price = 0.5; 
+        let price = 0.05; // Default safe price
         
         if (direction === 'UP') {
-            price = gameState.poolShares.up / totalShares;
+            price = (gameState.poolShares.up / totalShares) * PRICE_SCALE;
         } else {
-            price = gameState.poolShares.down / totalShares;
+            price = (gameState.poolShares.down / totalShares) * PRICE_SCALE;
         }
 
-        // Safety floor
-        if(price < 0.01) price = 0.01;
+        // Lower safety floor for 0.1 scale
+        if(price < 0.001) price = 0.001;
 
         const sharesReceived = solAmount / price;
 
-        // Add new shares to the pool, affecting future price
+        // Add new shares to the pool
         if (direction === 'UP') {
             gameState.poolShares.up += sharesReceived;
         } else {
@@ -189,7 +190,7 @@ app.post('/api/verify-bet', async (req, res) => {
 
         saveState();
         
-        console.log(`> TRADE: ${userPubKey} bought ${sharesReceived.toFixed(2)} ${direction} shares for ${solAmount} SOL @ ${price.toFixed(2)}`);
+        console.log(`> TRADE: ${userPubKey} bought ${sharesReceived.toFixed(2)} ${direction} shares for ${solAmount} SOL @ ${price.toFixed(3)}`);
         res.json({ success: true, shares: sharesReceived, price: price });
 
     } catch (e) {
