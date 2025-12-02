@@ -17,10 +17,7 @@ app.use(express.json());
 const PORT = process.env.PORT || 3000;
 
 // --- MAINNET CONFIGURATION ---
-// Uses Helius RPC via Environment Variable for reliability
 const SOLANA_NETWORK = `https://mainnet.helius-rpc.com/?api-key=${process.env.HELIUS_API_KEY}`;
-
-// ENSURE THESE WALLETS ARE UPDATED FOR MAINNET
 const FEE_WALLET = new PublicKey("5xfyqaDzaj1XNvyz3gnuRJMSNUzGkkMbYbh2bKzWxuan");
 const UPKEEP_WALLET = new PublicKey("BH8aAiEDgZGJo6pjh32d5b6KyrNt6zA9U8WTLZShmVXq");
 
@@ -34,7 +31,7 @@ const FEE_PERCENT = 0.0552;
 const RESERVE_SOL = 0.02;
 const SWEEP_TARGET = 0.05;
 const FRAME_DURATION = 15 * 60 * 1000; 
-const BACKEND_VERSION = "100.3"; // Helius Integration
+const BACKEND_VERSION = "100.4"; // Race Condition Fix
 
 // --- PERSISTENCE ---
 const RENDER_DISK_PATH = '/var/data';
@@ -230,7 +227,6 @@ async function processPayoutQueue() {
                         const uData = await getUser(item.pubKey);
                         if (uData.frameLog && uData.frameLog[frameId]) {
                             const entry = uData.frameLog[frameId];
-                            // IDEMPOTENCY CHECK
                             if (type === 'USER_PAYOUT' && entry.payoutTx) continue;
                             if (type === 'USER_REFUND' && entry.refundTx) continue;
                         }
@@ -309,14 +305,13 @@ async function queuePayouts(frameId, result, bets, totalVolume) {
         const eligibleWinners = [];
 
         for (const [pubKey, pos] of Object.entries(userPositions)) {
-            // --- ROUNDING FIX ---
             const rUp = Math.round(pos.up * 10000) / 10000;
             const rDown = Math.round(pos.down * 10000) / 10000;
             
             let userDir = "FLAT";
             if (rUp > rDown) userDir = "UP";
             else if (rDown > rUp) userDir = "DOWN";
-            if (rUp === rDown) userDir = "FLAT"; 
+            if (pos.up === pos.down) userDir = "FLAT"; 
 
             if (userDir === result) {
                 const sharesHeld = result === "UP" ? pos.up : pos.down;
@@ -432,7 +427,6 @@ async function closeFrame(closePrice, closeTime) {
             userPositions[bet.user].sol += bet.costSol;
         });
 
-        // LOG WINNERS & UPDATE USERS
         const usersToUpdate = Object.entries(userPositions);
         const USER_IO_BATCH_SIZE = 20; 
         for (let i = 0; i < usersToUpdate.length; i += USER_IO_BATCH_SIZE) {
@@ -489,11 +483,13 @@ async function updatePrice() {
             await stateMutex.runExclusive(async () => {
                 gameState.price = currentPrice;
                 const currentWindowStart = getCurrentWindowStart();
+
+                // 1. RACE CONDITION FIX: If already resetting, don't queue another close
+                if (gameState.isResetting) return;
                 
                 if (gameState.isPaused) {
                     if (currentWindowStart > gameState.candleStartTime) {
                         console.log("> [SYS] Unpausing for new Frame.");
-                        // --- PAUSE HISTORY RECORDING ---
                         const skippedFrameRecord = {
                             id: gameState.candleStartTime,
                             startTime: gameState.candleStartTime,
@@ -507,7 +503,6 @@ async function updatePrice() {
                         historySummary.unshift(skippedFrameRecord);
                         if(historySummary.length > 100) historySummary = historySummary.slice(0,100);
                         await atomicWrite(HISTORY_FILE, historySummary);
-                        // ------------------------------
 
                         gameState.isPaused = false; 
                         gameState.candleStartTime = currentWindowStart;
@@ -523,8 +518,11 @@ async function updatePrice() {
                         gameState.candleOpen = currentPrice;
                         await saveSystemState();
                     } else {
+                        // 2. SET LOCK IMMEDIATELY
                         gameState.isResetting = true; 
                         await saveSystemState();
+                        
+                        // 3. Trigger Async Close (Mutex released here, but isResetting protects re-entry)
                         closeFrame(currentPrice, currentWindowStart);
                     }
                 }
@@ -538,11 +536,6 @@ async function updatePrice() {
                 gameState.sharePriceHistory = gameState.sharePriceHistory.filter(x => x.t > Date.now() - FIVE_MINS);
                 await saveSystemState();
             });
-            
-            const currentWindowStart = getCurrentWindowStart();
-            if (!gameState.isPaused && currentWindowStart > gameState.candleStartTime && gameState.candleStartTime !== 0) {
-                await closeFrame(currentPrice, currentWindowStart);
-            }
         }
     } catch (e) { console.log("Oracle unstable"); }
 }
