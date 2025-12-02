@@ -16,52 +16,110 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 const SOLANA_NETWORK = 'https://api.devnet.solana.com';
-// --- VAULT ADDRESS ---
 const HOUSE_ADDRESS = "BXSp5y6Ua6tB5fZDe1EscVaaEaZLg1yqzrsPqAXhKJYy";
 const COINGECKO_API_KEY = "CG-KsYLbF8hxVytbPTNyLXe7vWA";
 const PRICE_SCALE = 0.1;
 
-// --- PERSISTENCE CONFIGURATION ---
+// --- PERSISTENCE DIRECTORIES ---
 const RENDER_DISK_PATH = '/var/data';
-const DATA_DIR = fs.existsSync(RENDER_DISK_PATH) ? RENDER_DISK_PATH : __dirname;
+const DATA_DIR = fs.existsSync(RENDER_DISK_PATH) ? RENDER_DISK_PATH : path.join(__dirname, 'data');
+const FRAMES_DIR = path.join(DATA_DIR, 'frames');
+const USERS_DIR = path.join(DATA_DIR, 'users');
 
-const STORAGE_FILE = path.join(DATA_DIR, 'storage.json'); 
-const HISTORY_FILE = path.join(DATA_DIR, 'history.json'); 
-const USERS_FILE = path.join(DATA_DIR, 'users.json');     
+// Ensure directories exist
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
+if (!fs.existsSync(FRAMES_DIR)) fs.mkdirSync(FRAMES_DIR);
+if (!fs.existsSync(USERS_DIR)) fs.mkdirSync(USERS_DIR);
 
-console.log(`> [SYS] Persistence Layer Active. Saving data to: ${DATA_DIR}`);
+const STATE_FILE = path.join(DATA_DIR, 'state.json');     // Global pointers (current candle time)
+const HISTORY_FILE = path.join(DATA_DIR, 'history.json'); // Lightweight summary of past results
 
-// --- STATE MANAGEMENT ---
+console.log(`> [SYS] Persistence Sharding Active. Root: ${DATA_DIR}`);
+
+// --- MEMORY CACHE ---
+// We keep the CURRENT frame in memory for speed, flush to specific file on changes.
 let gameState = {
     price: 0,
     candleOpen: 0,
     candleStartTime: 0,
-    bets: [], 
-    poolShares: { up: 100, down: 100 } 
+    poolShares: { up: 100, down: 100 },
+    bets: [] // Current frame bets only
 };
 
-let frameHistory = []; 
-let userStats = {};    
+let historySummary = []; // List of past frame results (lightweight)
 
-// --- LOAD DATA ---
-function loadData() {
+// --- I/O HELPERS ---
+
+function loadGlobalState() {
     try {
-        if (fs.existsSync(STORAGE_FILE)) gameState = { ...gameState, ...JSON.parse(fs.readFileSync(STORAGE_FILE)) };
-        if (fs.existsSync(HISTORY_FILE)) frameHistory = JSON.parse(fs.readFileSync(HISTORY_FILE));
-        if (fs.existsSync(USERS_FILE)) userStats = JSON.parse(fs.readFileSync(USERS_FILE));
-        console.log(`> [SYS] Data Loaded. Active Bets: ${gameState.bets.length}. History Depth: ${frameHistory.length}`);
-    } catch (e) { console.error("Load Error", e); }
+        // 1. Load History Summary
+        if (fs.existsSync(HISTORY_FILE)) {
+            historySummary = JSON.parse(fs.readFileSync(HISTORY_FILE));
+        }
+
+        // 2. Load Global State Pointers
+        if (fs.existsSync(STATE_FILE)) {
+            const savedState = JSON.parse(fs.readFileSync(STATE_FILE));
+            gameState.candleOpen = savedState.candleOpen || 0;
+            gameState.candleStartTime = savedState.candleStartTime || 0;
+            gameState.poolShares = savedState.poolShares || { up: 100, down: 100 };
+            
+            // 3. Load Active Frame Data
+            // We construct the filename based on the saved start time
+            const currentFrameFile = path.join(FRAMES_DIR, `frame_${gameState.candleStartTime}.json`);
+            if (fs.existsSync(currentFrameFile)) {
+                const frameData = JSON.parse(fs.readFileSync(currentFrameFile));
+                gameState.bets = frameData.bets || [];
+                // Sync pool shares just in case
+                gameState.poolShares = frameData.poolShares || gameState.poolShares;
+            } else {
+                gameState.bets = [];
+            }
+        }
+    } catch (e) { console.error("> [ERR] Load Error:", e); }
 }
 
-function saveData() {
+// Save global pointers + Current Frame detailed file
+function saveSystemState() {
     try {
-        fs.writeFileSync(STORAGE_FILE, JSON.stringify(gameState));
-        fs.writeFileSync(HISTORY_FILE, JSON.stringify(frameHistory));
-        fs.writeFileSync(USERS_FILE, JSON.stringify(userStats));
-    } catch (e) { console.error("Save Error", e); }
+        // 1. Save Pointers
+        const pointers = {
+            candleOpen: gameState.candleOpen,
+            candleStartTime: gameState.candleStartTime,
+            poolShares: gameState.poolShares
+        };
+        fs.writeFileSync(STATE_FILE, JSON.stringify(pointers));
+
+        // 2. Save Current Frame Detail
+        if (gameState.candleStartTime > 0) {
+            const frameFile = path.join(FRAMES_DIR, `frame_${gameState.candleStartTime}.json`);
+            const frameData = {
+                id: gameState.candleStartTime,
+                open: gameState.candleOpen,
+                poolShares: gameState.poolShares,
+                bets: gameState.bets
+            };
+            fs.writeFileSync(frameFile, JSON.stringify(frameData));
+        }
+    } catch (e) { console.error("> [ERR] Save Error:", e); }
 }
 
-loadData();
+// User File I/O (Read/Write specific user)
+function getUser(pubKey) {
+    const file = path.join(USERS_DIR, `user_${pubKey}.json`);
+    if (fs.existsSync(file)) {
+        return JSON.parse(fs.readFileSync(file));
+    }
+    return { wins: 0, losses: 0, totalSol: 0, framesPlayed: 0 };
+}
+
+function saveUser(pubKey, data) {
+    const file = path.join(USERS_DIR, `user_${pubKey}.json`);
+    fs.writeFileSync(file, JSON.stringify(data));
+}
+
+// Initial Load
+loadGlobalState();
 
 // --- 15m LOGIC ---
 function getCurrentWindowStart() {
@@ -72,9 +130,8 @@ function getCurrentWindowStart() {
     return start.getTime();
 }
 
-// --- FRAME CLOSING LOGIC ---
 function closeFrame(closePrice, closeTime) {
-    console.log(`> [SYS] Closing Frame: ${new Date(gameState.candleStartTime).toISOString()}`);
+    console.log(`> [SYS] Closing Frame: ${gameState.candleStartTime}`);
 
     const openPrice = gameState.candleOpen;
     let result = "FLAT";
@@ -85,7 +142,7 @@ function closeFrame(closePrice, closeTime) {
     const realSharesDown = Math.max(0, gameState.poolShares.down - 100);
     const frameSol = gameState.bets.reduce((acc, bet) => acc + bet.costSol, 0);
 
-    // Archive Frame
+    // 1. Archive Summary to History
     const frameRecord = {
         id: gameState.candleStartTime,
         time: new Date(gameState.candleStartTime).toISOString(),
@@ -97,43 +154,46 @@ function closeFrame(closePrice, closeTime) {
         totalSol: frameSol
     };
     
-    // Add to history (UNLIMITED STORAGE as requested)
-    frameHistory.unshift(frameRecord); 
-    // Removed logic that limits array length.
+    // Add to history (Infinite)
+    historySummary.unshift(frameRecord); 
+    fs.writeFileSync(HISTORY_FILE, JSON.stringify(historySummary));
 
-    // Determine Winners/Losers Logic
-    const frameUserPositions = {}; 
+    // 2. Process Winners (Batch User Updates)
+    // We group bets by user to minimize file I/O (read user once, update, save once)
+    const usersInFrame = {};
+
     gameState.bets.forEach(bet => {
-        if (!frameUserPositions[bet.user]) {
-            frameUserPositions[bet.user] = { upShares: 0, downShares: 0 };
+        if (!usersInFrame[bet.user]) {
+            usersInFrame[bet.user] = { up: 0, down: 0 };
         }
-        if (bet.direction === 'UP') frameUserPositions[bet.user].upShares += bet.shares;
-        else frameUserPositions[bet.user].downShares += bet.shares;
+        if (bet.direction === 'UP') usersInFrame[bet.user].up += bet.shares;
+        else usersInFrame[bet.user].down += bet.shares;
     });
 
-    for (const [pubKey, pos] of Object.entries(frameUserPositions)) {
-        if (!userStats[pubKey]) userStats[pubKey] = { wins: 0, losses: 0, totalSol: 0, framesPlayed: 0 };
-        
-        const user = userStats[pubKey];
-        user.framesPlayed += 1; 
+    // Update each user file
+    for (const [pubKey, pos] of Object.entries(usersInFrame)) {
+        const userData = getUser(pubKey);
+        userData.framesPlayed += 1;
 
-        let userDirection = "FLAT";
-        if (pos.upShares > pos.downShares) userDirection = "UP";
-        else if (pos.downShares > pos.upShares) userDirection = "DOWN";
+        let userDir = "FLAT";
+        if (pos.up > pos.down) userDir = "UP";
+        else if (pos.down > pos.up) userDir = "DOWN";
 
-        if (userDirection !== "FLAT" && result !== "FLAT") {
-            if (userDirection === result) user.wins += 1;
-            else user.losses += 1;
+        if (userDir !== "FLAT" && result !== "FLAT") {
+            if (userDir === result) userData.wins += 1;
+            else userData.losses += 1;
         }
+        
+        saveUser(pubKey, userData);
     }
 
-    // Reset Game State
+    // 3. Reset State for New Frame
     gameState.candleStartTime = closeTime;
     gameState.candleOpen = closePrice;
     gameState.poolShares = { up: 100, down: 100 }; 
-    gameState.bets = []; 
+    gameState.bets = []; // Clear memory bets
 
-    saveData();
+    saveSystemState(); // Create new frame file
 }
 
 // --- ORACLE ---
@@ -153,9 +213,10 @@ async function updatePrice() {
                 if (gameState.candleStartTime !== 0) {
                     closeFrame(currentPrice, currentWindowStart);
                 } else {
+                    // First Run
                     gameState.candleStartTime = currentWindowStart;
                     gameState.candleOpen = currentPrice;
-                    saveData();
+                    saveSystemState();
                 }
             }
         }
@@ -185,11 +246,10 @@ app.get('/api/state', (req, res) => {
     let activePosition = null;
 
     if (userKey) {
-        if (userStats[userKey]) {
-            myStats = userStats[userKey];
-        }
+        // Load specific user file on demand
+        myStats = getUser(userKey);
         
-        // --- CALCULATE ACTIVE POSITION FOR CURRENT FRAME ---
+        // Calculate active position from memory
         const userBets = gameState.bets.filter(b => b.user === userKey);
         activePosition = {
             upShares: userBets.filter(b => b.direction === 'UP').reduce((a, b) => a + b.shares, 0),
@@ -208,9 +268,9 @@ app.get('/api/state', (req, res) => {
             sharesUp: gameState.poolShares.up,
             sharesDown: gameState.poolShares.down
         },
-        history: frameHistory, 
+        history: historySummary, // Send the summary list
         userStats: myStats,
-        activePosition: activePosition // Send current bet info
+        activePosition: activePosition 
     });
 });
 
@@ -251,19 +311,18 @@ app.post('/api/verify-bet', async (req, res) => {
         if (direction === 'UP') gameState.poolShares.up += sharesReceived;
         else gameState.poolShares.down += sharesReceived;
 
-        // UPDATE USER STATS
-        if (!userStats[userPubKey]) {
-            userStats[userPubKey] = { wins: 0, losses: 0, totalSol: 0, framesPlayed: 0 };
-        }
-        userStats[userPubKey].totalSol += solAmount; 
+        // --- UPDATE INDIVIDUAL USER FILE ---
+        const userData = getUser(userPubKey);
+        userData.totalSol += solAmount;
+        saveUser(userPubKey, userData);
 
+        // --- UPDATE CURRENT FRAME FILE ---
         gameState.bets.push({
             signature, user: userPubKey, direction,
             costSol: solAmount, entryPrice: price, shares: sharesReceived,
             timestamp: Date.now()
         });
-
-        saveData();
+        saveSystemState();
         
         console.log(`> TRADE: ${userPubKey} | ${direction} | ${sharesReceived.toFixed(2)} Shares`);
         res.json({ success: true, shares: sharesReceived, price: price });
@@ -275,5 +334,5 @@ app.post('/api/verify-bet', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-    console.log(`> ASDForecast Engine v5.1 (Active Stats) running on ${PORT}`);
+    console.log(`> ASDForecast Engine v6 (Sharded Persistence) running on ${PORT}`);
 });
