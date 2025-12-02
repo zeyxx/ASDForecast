@@ -29,7 +29,7 @@ const FEE_PERCENT = 0.0552;
 const RESERVE_SOL = 0.02;
 const SWEEP_TARGET = 0.05;
 const FRAME_DURATION = 15 * 60 * 1000; 
-const BACKEND_VERSION = "76.0"; // Updated to v76
+const BACKEND_VERSION = "76.2"; // Updated to v76.2
 
 // --- PERSISTENCE ---
 const RENDER_DISK_PATH = '/var/data';
@@ -301,15 +301,14 @@ async function queuePayouts(frameId, result, bets, totalVolume) {
         const eligibleWinners = [];
 
         for (const [pubKey, pos] of Object.entries(userPositions)) {
-            // DETERMINE USER DIRECTION
+            // DETERMINE USER DIRECTION (FLAT if equal)
             let userDir = "FLAT";
             if (pos.up > pos.down) userDir = "UP";
             else if (pos.down > pos.up) userDir = "DOWN";
-            // IF pos.up === pos.down, userDir remains FLAT
 
             // STRICT FILTERING: Only if userDir matches result do they count.
-            // If userDir is FLAT, they do NOT match UP or DOWN, so they get 0 payout.
-            if (userDir === result) {
+            // This correctly excludes 50/50 hedges (since userDir is FLAT).
+            if (userDir === result) { 
                 const sharesHeld = result === "UP" ? pos.up : pos.down;
                 totalWinningShares += sharesHeld;
                 eligibleWinners.push({ pubKey, sharesHeld });
@@ -322,7 +321,6 @@ async function queuePayouts(frameId, result, bets, totalVolume) {
                 const batchWinners = eligibleWinners.slice(i, i + BATCH_SIZE);
                 const batchRecipients = [];
                 for (const winner of batchWinners) {
-                    // SHARE CALCULATION: Denominator is ONLY shares held by winners
                     const shareRatio = winner.sharesHeld / totalWinningShares;
                     const payoutLamports = Math.floor(potLamports * shareRatio);
                     if (payoutLamports > 5000) batchRecipients.push({ pubKey: winner.pubKey, amount: payoutLamports });
@@ -410,7 +408,6 @@ async function closeFrame(closePrice, closeTime) {
         await atomicWrite(HISTORY_FILE, historySummary);
 
         const betsSnapshot = [...gameState.bets];
-
         const userPositions = {};
         betsSnapshot.forEach(bet => {
             if (!userPositions[bet.user]) userPositions[bet.user] = { up: 0, down: 0, sol: 0 };
@@ -427,13 +424,11 @@ async function closeFrame(closePrice, closeTime) {
                 const userData = await getUser(pubKey);
                 userData.framesPlayed += 1;
                 
-                // --- LOGIC: DETERMINE OUTCOME ---
                 let userDir = "FLAT";
                 if (pos.up > pos.down) userDir = "UP";
                 else if (pos.down > pos.up) userDir = "DOWN";
                 
-                // Note: if pos.up === pos.down, userDir stays "FLAT".
-                // FLAT != "UP" and FLAT != "DOWN", so outcome is LOSS.
+                // If pos.up === pos.down, userDir stays "FLAT" -> outcome is LOSS.
                 const outcome = (userDir !== "FLAT" && result !== "FLAT" && userDir === result) ? "WIN" : "LOSS";
                 
                 if (outcome === "WIN") userData.wins += 1; else if (outcome === "LOSS") userData.losses += 1;
@@ -516,7 +511,6 @@ setInterval(updatePrice, 10000);
 updatePrice(); 
 processPayoutQueue();
 
-// --- ENDPOINTS ---
 app.get('/api/state', async (req, res) => {
     // LOCK-FREE READ
     const now = new Date();
