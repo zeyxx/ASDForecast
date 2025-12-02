@@ -2,10 +2,13 @@ const express = require('express');
 const cors = require('cors');
 const { Connection, PublicKey, Keypair, Transaction, SystemProgram, sendAndConfirmTransaction } = require('@solana/web3.js');
 const axios = require('axios');
-const fs = require('fs');
+const fs = require('fs').promises; // Use Promises for Async I/O
+const fsSync = require('fs'); // Keep sync for initial load only
 const path = require('path');
+const { Mutex } = require('async-mutex'); // REQUIRES: npm install async-mutex
 
 const app = express();
+const stateMutex = new Mutex(); // Locks state to prevent race conditions
 
 app.use(cors({
     origin: 'https://www.alonisthe.dev',
@@ -19,19 +22,19 @@ const SOLANA_NETWORK = 'https://api.devnet.solana.com';
 const FEE_WALLET = new PublicKey("5xfyqaDzaj1XNvyz3gnuRJMSNUzGkkMbYbh2bKzWxuan");
 const COINGECKO_API_KEY = "CG-KsYLbF8hxVytbPTNyLXe7vWA";
 const PRICE_SCALE = 0.1;
-const FEE_PERCENT = 0.0552; // 5.52%
-const POT_PERCENT = 0.94;   // 94%
-const RESERVE_SOL = 0.02;   // Min wallet balance
+const PAYOUT_MULTIPLIER = 0.94;
+const FEE_PERCENT = 0.0552; 
+const RESERVE_SOL = 0.02;
 
 // --- PERSISTENCE ---
 const RENDER_DISK_PATH = '/var/data';
-const DATA_DIR = fs.existsSync(RENDER_DISK_PATH) ? RENDER_DISK_PATH : path.join(__dirname, 'data');
+const DATA_DIR = fsSync.existsSync(RENDER_DISK_PATH) ? RENDER_DISK_PATH : path.join(__dirname, 'data');
 const FRAMES_DIR = path.join(DATA_DIR, 'frames');
 const USERS_DIR = path.join(DATA_DIR, 'users');
 
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
-if (!fs.existsSync(FRAMES_DIR)) fs.mkdirSync(FRAMES_DIR);
-if (!fs.existsSync(USERS_DIR)) fs.mkdirSync(USERS_DIR);
+if (!fsSync.existsSync(DATA_DIR)) fsSync.mkdirSync(DATA_DIR);
+if (!fsSync.existsSync(FRAMES_DIR)) fsSync.mkdirSync(FRAMES_DIR);
+if (!fsSync.existsSync(USERS_DIR)) fsSync.mkdirSync(USERS_DIR);
 
 const STATE_FILE = path.join(DATA_DIR, 'state.json');
 const HISTORY_FILE = path.join(DATA_DIR, 'history.json');
@@ -44,8 +47,8 @@ try {
     if (process.env.SOLANA_WALLET_JSON) {
         houseKeypair = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(process.env.SOLANA_WALLET_JSON)));
         console.log(`> [AUTH] Wallet Loaded (ENV): ${houseKeypair.publicKey.toString()}`);
-    } else if (fs.existsSync('house-wallet.json')) {
-        houseKeypair = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fs.readFileSync('house-wallet.json'))));
+    } else if (fsSync.existsSync('house-wallet.json')) {
+        houseKeypair = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fsSync.readFileSync('house-wallet.json'))));
         console.log(`> [AUTH] Wallet Loaded (File): ${houseKeypair.publicKey.toString()}`);
     } else {
         console.warn("> [WARN] NO PRIVATE KEY. Payouts Disabled.");
@@ -62,31 +65,10 @@ let gameState = {
 };
 let historySummary = [];
 
-// --- I/O ---
-function loadGlobalState() {
+// --- I/O (Async Wrapper) ---
+async function saveSystemState() {
     try {
-        if (fs.existsSync(HISTORY_FILE)) historySummary = JSON.parse(fs.readFileSync(HISTORY_FILE));
-        if (fs.existsSync(STATE_FILE)) {
-            const savedState = JSON.parse(fs.readFileSync(STATE_FILE));
-            gameState.candleOpen = savedState.candleOpen || 0;
-            gameState.candleStartTime = savedState.candleStartTime || 0;
-            gameState.poolShares = savedState.poolShares || { up: 100, down: 100 };
-            
-            const currentFrameFile = path.join(FRAMES_DIR, `frame_${gameState.candleStartTime}.json`);
-            if (fs.existsSync(currentFrameFile)) {
-                const frameData = JSON.parse(fs.readFileSync(currentFrameFile));
-                gameState.bets = frameData.bets || [];
-                gameState.poolShares = frameData.poolShares || gameState.poolShares;
-            } else {
-                gameState.bets = [];
-            }
-        }
-    } catch (e) { console.error("> [ERR] Load Error:", e); }
-}
-
-function saveSystemState() {
-    try {
-        fs.writeFileSync(STATE_FILE, JSON.stringify({
+        await fs.writeFile(STATE_FILE, JSON.stringify({
             candleOpen: gameState.candleOpen,
             candleStartTime: gameState.candleStartTime,
             poolShares: gameState.poolShares
@@ -94,7 +76,8 @@ function saveSystemState() {
 
         if (gameState.candleStartTime > 0) {
             const frameFile = path.join(FRAMES_DIR, `frame_${gameState.candleStartTime}.json`);
-            fs.writeFileSync(frameFile, JSON.stringify({
+            // We save the full frame state
+            await fs.writeFile(frameFile, JSON.stringify({
                 id: gameState.candleStartTime,
                 open: gameState.candleOpen,
                 poolShares: gameState.poolShares,
@@ -104,17 +87,39 @@ function saveSystemState() {
     } catch (e) { console.error("> [ERR] Save Error:", e); }
 }
 
-function getUser(pubKey) {
+async function getUser(pubKey) {
     const file = path.join(USERS_DIR, `user_${pubKey}.json`);
-    if (fs.existsSync(file)) return JSON.parse(fs.readFileSync(file));
-    return { wins: 0, losses: 0, totalSol: 0, framesPlayed: 0, frameLog: {} };
+    try {
+        const data = await fs.readFile(file, 'utf8');
+        return JSON.parse(data);
+    } catch (e) {
+        return { wins: 0, losses: 0, totalSol: 0, framesPlayed: 0, frameLog: {} };
+    }
 }
 
-function saveUser(pubKey, data) {
-    fs.writeFileSync(path.join(USERS_DIR, `user_${pubKey}.json`), JSON.stringify(data));
+async function saveUser(pubKey, data) {
+    try {
+        await fs.writeFile(path.join(USERS_DIR, `user_${pubKey}.json`), JSON.stringify(data));
+    } catch (e) { console.error(`> [ERR] User Save Error (${pubKey})`); }
 }
 
-loadGlobalState();
+// Initial Sync Load
+try {
+    if (fsSync.existsSync(HISTORY_FILE)) historySummary = JSON.parse(fsSync.readFileSync(HISTORY_FILE));
+    if (fsSync.existsSync(STATE_FILE)) {
+        const savedState = JSON.parse(fsSync.readFileSync(STATE_FILE));
+        gameState.candleOpen = savedState.candleOpen || 0;
+        gameState.candleStartTime = savedState.candleStartTime || 0;
+        gameState.poolShares = savedState.poolShares || { up: 100, down: 100 };
+        
+        const currentFrameFile = path.join(FRAMES_DIR, `frame_${gameState.candleStartTime}.json`);
+        if (fsSync.existsSync(currentFrameFile)) {
+            const frameData = JSON.parse(fsSync.readFileSync(currentFrameFile));
+            gameState.bets = frameData.bets || [];
+            gameState.poolShares = frameData.poolShares || gameState.poolShares;
+        }
+    }
+} catch (e) { console.error("Init Load Error"); }
 
 // --- 15m LOGIC ---
 function getCurrentWindowStart() {
@@ -125,165 +130,161 @@ function getCurrentWindowStart() {
     return start.getTime();
 }
 
-// --- PAYOUT ENGINE (REWORKED) ---
+// --- PAYOUT ENGINE (BATCHED) ---
 async function processPayouts(frameId, result, bets, totalVolume) {
-    if (!houseKeypair || totalVolume === 0) return console.log("> [PAYOUT] Skipping (No Key or Volume)");
+    if (!houseKeypair || totalVolume === 0) return;
 
     const connection = new Connection(SOLANA_NETWORK, 'confirmed');
-    console.log(`> [PAYOUT] Frame ${frameId} | Result: ${result} | Vol: ${totalVolume.toFixed(4)} SOL`);
+    console.log(`> [PAYOUT] Frame ${frameId} | Vol: ${totalVolume.toFixed(4)} SOL`);
 
-    try {
-        // 1. Check Safety Reserve
-        const balance = await connection.getBalance(houseKeypair.publicKey);
-        if ((balance / 1e9) < RESERVE_SOL) return console.error("> [PAYOUT] HALT: Wallet below 0.02 SOL Reserve.");
+    // 1. Fee
+    const feeLamports = Math.floor((totalVolume * FEE_PERCENT) * 1e9);
+    if (feeLamports > 0) {
+        try {
+            const feeTx = new Transaction().add(SystemProgram.transfer({ fromPubkey: houseKeypair.publicKey, toPubkey: FEE_WALLET, lamports: feeLamports }));
+            await sendAndConfirmTransaction(connection, feeTx, [houseKeypair]);
+        } catch (e) { console.error("> [FEE] Error:", e.message); }
+    }
 
-        // 2. Pay Fee Wallet (5.52%)
-        const feeLamports = Math.floor((totalVolume * FEE_PERCENT) * 1e9);
-        if (feeLamports > 0) {
-            try {
-                const feeTx = new Transaction().add(SystemProgram.transfer({ fromPubkey: houseKeypair.publicKey, toPubkey: FEE_WALLET, lamports: feeLamports }));
-                await sendAndConfirmTransaction(connection, feeTx, [houseKeypair]);
-                console.log(`> [FEE] Sent ${(feeLamports/1e9).toFixed(4)} SOL`);
-            } catch (e) { console.error("> [FEE] Error:", e.message); }
-        }
+    if (result === "FLAT") return;
 
-        if (result === "FLAT") return console.log("> [PAYOUT] Flat market. No winners.");
-
-        // 3. Calculate Winner's Pot (94%)
-        const potLamports = Math.floor((totalVolume * POT_PERCENT) * 1e9);
-        
-        // 4. Aggregation: Group bets by user to determine Net Position
-        const userPositions = {};
-        bets.forEach(bet => {
-            if (!userPositions[bet.user]) userPositions[bet.user] = { upShares: 0, downShares: 0 };
-            if (bet.direction === 'UP') userPositions[bet.user].upShares += bet.shares;
-            else userPositions[bet.user].downShares += bet.shares;
-        });
-
-        // 5. Determine Eligibility & Total Winning Shares
-        let totalWinningSharesInPool = 0;
-        const eligibleWinners = [];
-
-        for (const [pubKey, pos] of Object.entries(userPositions)) {
-            // Determine User's Majority Direction
-            let userDir = "FLAT";
-            if (pos.upShares > pos.downShares) userDir = "UP";
-            else if (pos.downShares > pos.upShares) userDir = "DOWN";
-
-            // ELIGIBILITY CHECK: Did the user predict correctly?
-            if (userDir === result) {
-                // Determine how many "Correct Shares" they hold
-                const sharesHeld = result === "UP" ? pos.upShares : pos.downShares;
-                
-                totalWinningSharesInPool += sharesHeld;
-                eligibleWinners.push({ pubKey, sharesHeld });
-            }
-        }
-
-        // 6. Distribute Pot
-        if (totalWinningSharesInPool === 0) {
-            console.log("> [PAYOUT] House Wins (No eligible winners for this result).");
-            return;
-        }
-
-        console.log(`> [PAYOUT] Distributing ${potLamports/1e9} SOL to ${eligibleWinners.length} winners holding ${totalWinningSharesInPool.toFixed(2)} shares.`);
-
-        for (const winner of eligibleWinners) {
-            // Proportion: (UserShares / TotalShares) * Pot
-            const shareRatio = winner.sharesHeld / totalWinningSharesInPool;
-            const payoutLamports = Math.floor(potLamports * shareRatio);
-
-            if (payoutLamports > 5000) { // Minimum dust threshold (~0.000005 SOL)
-                try {
-                    const tx = new Transaction().add(SystemProgram.transfer({
-                        fromPubkey: houseKeypair.publicKey,
-                        toPubkey: new PublicKey(winner.pubKey),
-                        lamports: payoutLamports
-                    }));
-                    const signature = await sendAndConfirmTransaction(connection, tx, [houseKeypair]);
-                    
-                    const payoutSol = payoutLamports / 1e9;
-                    console.log(`> [PAYOUT] SENT ${payoutSol.toFixed(4)} SOL to ${winner.pubKey.slice(0,4)}`);
-
-                    // Log to User File
-                    const uData = getUser(winner.pubKey);
-                    if (uData.frameLog && uData.frameLog[frameId]) {
-                        uData.frameLog[frameId].payoutTx = signature;
-                        uData.frameLog[frameId].payoutAmount = payoutSol;
-                        saveUser(winner.pubKey, uData);
-                    }
-                } catch (e) {
-                    console.error(`> [PAYOUT] FAIL (${winner.pubKey}): ${e.message}`);
-                }
-            }
-        }
-
-    } catch (e) { console.error("> [PAYOUT] System Error:", e); }
-}
-
-function closeFrame(closePrice, closeTime) {
-    const frameId = gameState.candleStartTime; 
-    console.log(`> [SYS] Closing Frame: ${frameId}`);
-
-    const openPrice = gameState.candleOpen;
-    let result = "FLAT";
-    if (closePrice > openPrice) result = "UP";
-    else if (closePrice < openPrice) result = "DOWN";
-
-    const realSharesUp = Math.max(0, gameState.poolShares.up - 100);
-    const realSharesDown = Math.max(0, gameState.poolShares.down - 100);
-    const frameSol = gameState.bets.reduce((acc, bet) => acc + bet.costSol, 0);
-
-    // Archive
-    const frameRecord = {
-        id: frameId,
-        time: new Date(frameId).toISOString(),
-        open: openPrice,
-        close: closePrice,
-        result: result,
-        sharesUp: realSharesUp,
-        sharesDown: realSharesDown,
-        totalSol: frameSol
-    };
-    
-    historySummary.unshift(frameRecord); 
-    fs.writeFileSync(HISTORY_FILE, JSON.stringify(historySummary));
-
-    // Update User Stats (Wins/Losses)
-    const usersInFrame = {};
-    gameState.bets.forEach(bet => {
-        if (!usersInFrame[bet.user]) usersInFrame[bet.user] = { up: 0, down: 0 };
-        if (bet.direction === 'UP') usersInFrame[bet.user].up += bet.shares;
-        else usersInFrame[bet.user].down += bet.shares;
+    // 2. Aggregate Winners
+    const potLamports = Math.floor((totalVolume * 0.94) * 1e9);
+    const userPositions = {};
+    bets.forEach(bet => {
+        if (!userPositions[bet.user]) userPositions[bet.user] = { up: 0, down: 0 };
+        if (bet.direction === 'UP') userPositions[bet.user].up += bet.shares;
+        else userPositions[bet.user].down += bet.shares;
     });
 
-    for (const [pubKey, pos] of Object.entries(usersInFrame)) {
-        const userData = getUser(pubKey);
-        userData.framesPlayed += 1;
+    let totalWinningShares = 0;
+    const eligibleWinners = [];
+
+    for (const [pubKey, pos] of Object.entries(userPositions)) {
         let userDir = "FLAT";
         if (pos.up > pos.down) userDir = "UP";
         else if (pos.down > pos.up) userDir = "DOWN";
 
-        const outcome = (userDir !== "FLAT" && result !== "FLAT" && userDir === result) ? "WIN" : "LOSS";
-        
-        if (outcome === "WIN") userData.wins += 1;
-        else if (outcome === "LOSS") userData.losses += 1;
-
-        if (!userData.frameLog) userData.frameLog = {};
-        userData.frameLog[frameId] = { dir: userDir, result: outcome, time: Date.now() };
-        saveUser(pubKey, userData);
+        if (userDir === result) {
+            const sharesHeld = result === "UP" ? pos.up : pos.down;
+            totalWinningShares += sharesHeld;
+            eligibleWinners.push({ pubKey, sharesHeld });
+        }
     }
 
-    // TRIGGER PAYOUTS (Async)
-    processPayouts(frameId, result, [...gameState.bets], frameSol);
+    if (totalWinningShares === 0) return console.log("> [PAYOUT] House Wins.");
 
-    // Reset State
-    gameState.candleStartTime = closeTime;
-    gameState.candleOpen = closePrice;
-    gameState.poolShares = { up: 100, down: 100 }; 
-    gameState.bets = []; 
+    // 3. Batch Transactions (Max ~20 instructions per TX to fit in packet limit)
+    const BATCH_SIZE = 15; 
+    for (let i = 0; i < eligibleWinners.length; i += BATCH_SIZE) {
+        const batch = eligibleWinners.slice(i, i + BATCH_SIZE);
+        const tx = new Transaction();
+        let hasInstructions = false;
 
-    saveSystemState(); 
+        for (const winner of batch) {
+            const shareRatio = winner.sharesHeld / totalWinningShares;
+            const payoutLamports = Math.floor(potLamports * shareRatio);
+
+            if (payoutLamports > 5000) { // Dust threshold
+                tx.add(SystemProgram.transfer({
+                    fromPubkey: houseKeypair.publicKey,
+                    toPubkey: new PublicKey(winner.pubKey),
+                    lamports: payoutLamports
+                }));
+                hasInstructions = true;
+            }
+        }
+
+        if (hasInstructions) {
+            try {
+                const sig = await sendAndConfirmTransaction(connection, tx, [houseKeypair], { commitment: 'confirmed' });
+                console.log(`> [PAYOUT] Batch Sent: ${sig}`);
+                
+                // Update User Files (Async Background)
+                batch.forEach(async (w) => {
+                    const uData = await getUser(w.pubKey);
+                    if (uData.frameLog && uData.frameLog[frameId]) {
+                        uData.frameLog[frameId].payoutTx = sig;
+                        await saveUser(w.pubKey, uData);
+                    }
+                });
+            } catch (e) {
+                console.error(`> [PAYOUT] Batch Failed: ${e.message}`);
+            }
+        }
+    }
+}
+
+// --- FRAME CLOSING (LOCKED) ---
+async function closeFrame(closePrice, closeTime) {
+    // Acquire Lock to ensure no bets slip in during close
+    const release = await stateMutex.acquire();
+    
+    try {
+        const frameId = gameState.candleStartTime; 
+        console.log(`> [SYS] Closing Frame: ${frameId}`);
+
+        const openPrice = gameState.candleOpen;
+        let result = "FLAT";
+        if (closePrice > openPrice) result = "UP";
+        else if (closePrice < openPrice) result = "DOWN";
+
+        const realSharesUp = Math.max(0, gameState.poolShares.up - 100);
+        const realSharesDown = Math.max(0, gameState.poolShares.down - 100);
+        const frameSol = gameState.bets.reduce((acc, bet) => acc + bet.costSol, 0);
+
+        const frameRecord = {
+            id: frameId, time: new Date(frameId).toISOString(),
+            open: openPrice, close: closePrice, result: result,
+            sharesUp: realSharesUp, sharesDown: realSharesDown, totalSol: frameSol
+        };
+        
+        historySummary.unshift(frameRecord); 
+        await fs.writeFile(HISTORY_FILE, JSON.stringify(historySummary));
+
+        // Update Users (Parallel)
+        const userPromises = [];
+        const userPositions = {};
+        
+        gameState.bets.forEach(bet => {
+            if (!userPositions[bet.user]) userPositions[bet.user] = { up: 0, down: 0 };
+            if (bet.direction === 'UP') userPositions[bet.user].up += bet.shares;
+            else userPositions[bet.user].down += bet.shares;
+        });
+
+        for (const [pubKey, pos] of Object.entries(userPositions)) {
+            userPromises.push((async () => {
+                const userData = await getUser(pubKey);
+                userData.framesPlayed += 1;
+                let userDir = "FLAT";
+                if (pos.up > pos.down) userDir = "UP";
+                else if (pos.down > pos.up) userDir = "DOWN";
+
+                const outcome = (userDir !== "FLAT" && result !== "FLAT" && userDir === result) ? "WIN" : "LOSS";
+                if (outcome === "WIN") userData.wins += 1;
+                else if (outcome === "LOSS") userData.losses += 1;
+
+                if (!userData.frameLog) userData.frameLog = {};
+                userData.frameLog[frameId] = { dir: userDir, result: outcome, time: Date.now() };
+                await saveUser(pubKey, userData);
+            })());
+        }
+        await Promise.all(userPromises);
+
+        // Trigger Payouts (Don't await, let it run in background)
+        processPayouts(frameId, result, [...gameState.bets], frameSol);
+
+        // Reset
+        gameState.candleStartTime = closeTime;
+        gameState.candleOpen = closePrice;
+        gameState.poolShares = { up: 100, down: 100 }; 
+        gameState.bets = []; 
+
+        await saveSystemState();
+        
+    } finally {
+        release(); // Release Lock
+    }
 }
 
 // --- ORACLE ---
@@ -295,16 +296,32 @@ async function updatePrice() {
         
         if (response.data.solana) {
             const currentPrice = response.data.solana.usd;
-            gameState.price = currentPrice;
-            const currentWindowStart = getCurrentWindowStart();
             
-            if (currentWindowStart > gameState.candleStartTime) {
-                if (gameState.candleStartTime !== 0) closeFrame(currentPrice, currentWindowStart);
-                else {
-                    gameState.candleStartTime = currentWindowStart;
-                    gameState.candleOpen = currentPrice;
-                    saveSystemState();
+            // Lock State for updates
+            await stateMutex.runExclusive(async () => {
+                gameState.price = currentPrice;
+                const currentWindowStart = getCurrentWindowStart();
+                
+                if (currentWindowStart > gameState.candleStartTime) {
+                    if (gameState.candleStartTime !== 0) {
+                        // Release mutex inside closeFrame logic carefully, but here we are wrapped.
+                        // Actually, we need to call closeFrame OUTSIDE this mutex or handle it inside.
+                        // Since closeFrame uses the mutex too, we pass a flag or handle it recursively?
+                        // Better approach: Close frame logic handles the lock internally.
+                        // But we are currently holding the lock.
+                        // Refactor: We release lock here, then call closeFrame which grabs it.
+                    } else {
+                        gameState.candleStartTime = currentWindowStart;
+                        gameState.candleOpen = currentPrice;
+                        await saveSystemState();
+                    }
                 }
+            });
+            
+            // Re-check logic for frame close to avoid mutex deadlock
+            const currentWindowStart = getCurrentWindowStart();
+            if (currentWindowStart > gameState.candleStartTime && gameState.candleStartTime !== 0) {
+                await closeFrame(currentPrice, currentWindowStart);
             }
         }
     } catch (e) { console.log("Oracle unstable"); }
@@ -315,74 +332,85 @@ updatePrice();
 
 // --- ENDPOINTS ---
 
-app.get('/api/state', (req, res) => {
-    const now = new Date();
-    const currentWindowStart = getCurrentWindowStart();
-    const nextWindowStart = currentWindowStart + (15 * 60 * 1000);
-    const msUntilClose = nextWindowStart - now.getTime();
+app.get('/api/state', async (req, res) => {
+    // Read-only access doesn't strictly need mutex if we accept slight staleness,
+    // but preventing reads during a frame reset is safer.
+    const release = await stateMutex.acquire();
+    try {
+        const now = new Date();
+        const currentWindowStart = getCurrentWindowStart();
+        const nextWindowStart = currentWindowStart + (15 * 60 * 1000);
+        const msUntilClose = nextWindowStart - now.getTime();
 
-    const priceChange = gameState.price - gameState.candleOpen;
-    const percentChange = gameState.candleOpen ? (priceChange / gameState.candleOpen) * 100 : 0;
+        const priceChange = gameState.price - gameState.candleOpen;
+        const percentChange = gameState.candleOpen ? (priceChange / gameState.candleOpen) * 100 : 0;
+        const currentVolume = gameState.bets.reduce((acc, b) => acc + b.costSol, 0);
 
-    const totalShares = gameState.poolShares.up + gameState.poolShares.down;
-    const priceUp = (gameState.poolShares.up / totalShares) * PRICE_SCALE;
-    const priceDown = (gameState.poolShares.down / totalShares) * PRICE_SCALE;
+        const totalShares = gameState.poolShares.up + gameState.poolShares.down;
+        const priceUp = (gameState.poolShares.up / totalShares) * PRICE_SCALE;
+        const priceDown = (gameState.poolShares.down / totalShares) * PRICE_SCALE;
 
-    const userKey = req.query.user;
-    let myStats = null;
-    let activePosition = null;
+        const userKey = req.query.user;
+        let myStats = null;
+        let activePosition = null;
 
-    if (userKey) {
-        myStats = getUser(userKey);
-        const userBets = gameState.bets.filter(b => b.user === userKey);
-        activePosition = {
-            upShares: userBets.filter(b => b.direction === 'UP').reduce((a, b) => a + b.shares, 0),
-            downShares: userBets.filter(b => b.direction === 'DOWN').reduce((a, b) => a + b.shares, 0),
-            wageredSol: userBets.reduce((a, b) => a + b.costSol, 0)
-        };
+        if (userKey) {
+            myStats = await getUser(userKey);
+            const userBets = gameState.bets.filter(b => b.user === userKey);
+            activePosition = {
+                upShares: userBets.filter(b => b.direction === 'UP').reduce((a, b) => a + b.shares, 0),
+                downShares: userBets.filter(b => b.direction === 'DOWN').reduce((a, b) => a + b.shares, 0),
+                wageredSol: userBets.reduce((a, b) => a + b.costSol, 0)
+            };
+        }
+
+        res.json({
+            price: gameState.price,
+            openPrice: gameState.candleOpen,
+            change: percentChange,
+            msUntilClose: msUntilClose,
+            currentVolume: currentVolume,
+            market: {
+                priceUp, priceDown,
+                sharesUp: gameState.poolShares.up,
+                sharesDown: gameState.poolShares.down
+            },
+            history: historySummary,
+            userStats: myStats,
+            activePosition: activePosition 
+        });
+    } finally {
+        release();
     }
-
-    res.json({
-        price: gameState.price,
-        openPrice: gameState.candleOpen,
-        change: percentChange,
-        msUntilClose: msUntilClose,
-        market: {
-            priceUp, priceDown,
-            sharesUp: gameState.poolShares.up,
-            sharesDown: gameState.poolShares.down
-        },
-        history: historySummary,
-        userStats: myStats,
-        activePosition: activePosition 
-    });
 });
 
 app.post('/api/verify-bet', async (req, res) => {
     const { signature, direction, userPubKey } = req.body;
     if (!signature || !userPubKey) return res.status(400).json({ error: "MISSING_DATA" });
 
+    // 1. Verify Chain Data (No lock needed yet)
+    let solAmount = 0;
     try {
         const connection = new Connection(SOLANA_NETWORK, 'confirmed');
         const tx = await connection.getParsedTransaction(signature, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 });
         if (!tx || tx.meta.err) return res.status(400).json({ error: "TX_INVALID" });
 
-        let lamports = 0;
-        const instructions = tx.transaction.message.instructions;
         let housePubKeyStr = houseKeypair ? houseKeypair.publicKey.toString() : "BXSp5y6Ua6tB5fZDe1EscVaaEaZLg1yqzrsPqAXhKJYy"; 
-
+        const instructions = tx.transaction.message.instructions;
         for (let ix of instructions) {
             if (ix.program === 'system' && ix.parsed.type === 'transfer') {
                 if (ix.parsed.info.destination === housePubKeyStr) {
-                    lamports = ix.parsed.info.lamports;
+                    solAmount = ix.parsed.info.lamports / 1000000000;
                     break;
                 }
             }
         }
+        if (solAmount === 0) return res.status(400).json({ error: "NO_FUNDS" });
+    } catch (e) { return res.status(500).json({ error: "CHAIN_ERROR" }); }
 
-        if (lamports === 0) return res.status(400).json({ error: "NO_FUNDS" });
-        const solAmount = lamports / 1000000000;
-
+    // 2. Update State (CRITICAL SECTION - MUTEX LOCK)
+    const release = await stateMutex.acquire();
+    try {
         const totalShares = gameState.poolShares.up + gameState.poolShares.down;
         let price = 0.05; 
         if (direction === 'UP') price = (gameState.poolShares.up / totalShares) * PRICE_SCALE;
@@ -394,9 +422,10 @@ app.post('/api/verify-bet', async (req, res) => {
         if (direction === 'UP') gameState.poolShares.up += sharesReceived;
         else gameState.poolShares.down += sharesReceived;
 
-        const userData = getUser(userPubKey);
+        // Async User Update
+        const userData = await getUser(userPubKey);
         userData.totalSol += solAmount;
-        saveUser(userPubKey, userData);
+        await saveUser(userPubKey, userData);
 
         gameState.bets.push({
             signature, user: userPubKey, direction,
@@ -404,15 +433,19 @@ app.post('/api/verify-bet', async (req, res) => {
             timestamp: Date.now()
         });
 
-        saveSystemState();
+        await saveSystemState();
+        
+        console.log(`> TRADE: ${userPubKey} | ${direction} | ${sharesReceived.toFixed(2)} Shares`);
         res.json({ success: true, shares: sharesReceived, price: price });
 
     } catch (e) {
         console.error(e);
-        res.status(500).json({ error: "SERVER_ERROR" });
+        res.status(500).json({ error: "STATE_ERROR" });
+    } finally {
+        release();
     }
 });
 
 app.listen(PORT, () => {
-    console.log(`> ASDForecast Engine v15 (Pot Payouts) running on ${PORT}`);
+    console.log(`> ASDForecast Scalable Engine running on ${PORT}`);
 });
