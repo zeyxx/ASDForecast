@@ -26,8 +26,8 @@ let gameState = {
     candleOpen: 0,
     candleStartTime: 0,
     bets: [],
-    // Track Pool Volume in SOL for pricing
-    poolVolume: { up: 0.1, down: 0.1 } // Start with dust to avoid div/0
+    // UPDATED: Start with 100 Shares each (Virtual Liquidity)
+    poolShares: { up: 100, down: 100 } 
 };
 
 function loadState() {
@@ -37,7 +37,8 @@ function loadState() {
             gameState.bets = data.bets || [];
             gameState.candleOpen = data.candleOpen || 0;
             gameState.candleStartTime = data.candleStartTime || 0;
-            gameState.poolVolume = data.poolVolume || { up: 0.1, down: 0.1 };
+            // Fallback if older save file exists
+            gameState.poolShares = data.poolShares || { up: 100, down: 100 };
             console.log(`> [SYS] State loaded.`);
         }
     } catch (e) { console.error("Load Error", e); }
@@ -78,12 +79,10 @@ async function updatePrice() {
                 console.log(`> [SYS] New 15m Candle: ${new Date(currentWindowStart).toISOString()}`);
                 gameState.candleStartTime = currentWindowStart;
                 gameState.candleOpen = currentPrice;
-                // Reset Pools for new round? 
-                // For this demo, we keep cumulative pools to show pricing dynamics, 
-                // or you can reset: gameState.poolVolume = { up: 0.1, down: 0.1 };
-                // Let's reset to keep it fresh for the timeframe.
-                gameState.poolVolume = { up: 0.1, down: 0.1 }; 
-                gameState.bets = []; // Clear old bets
+                
+                // RESET POOL TO 100 / 100 SHARES
+                gameState.poolShares = { up: 100, down: 100 }; 
+                gameState.bets = []; 
                 saveState();
             } else if (gameState.candleOpen === 0) {
                 gameState.candleOpen = currentPrice;
@@ -107,11 +106,12 @@ app.get('/api/state', (req, res) => {
     const priceChange = gameState.price - gameState.candleOpen;
     const percentChange = gameState.candleOpen ? (priceChange / gameState.candleOpen) * 100 : 0;
 
-    // CALCULATE DYNAMIC PRICES
-    // Price = Share of Pool. e.g. 90 SOL UP / 100 SOL Total = 0.90 Price
-    const totalVol = gameState.poolVolume.up + gameState.poolVolume.down;
-    const priceUp = gameState.poolVolume.up / totalVol;
-    const priceDown = gameState.poolVolume.down / totalVol;
+    // CALCULATE DYNAMIC PRICES (Proportional)
+    const totalShares = gameState.poolShares.up + gameState.poolShares.down;
+    
+    // Price = Share of Pool
+    const priceUp = gameState.poolShares.up / totalShares;
+    const priceDown = gameState.poolShares.down / totalShares;
 
     res.json({
         price: gameState.price,
@@ -121,14 +121,14 @@ app.get('/api/state', (req, res) => {
         market: {
             priceUp: priceUp,
             priceDown: priceDown,
-            volUp: gameState.poolVolume.up,
-            volDown: gameState.poolVolume.down
+            sharesUp: gameState.poolShares.up,
+            sharesDown: gameState.poolShares.down
         }
     });
 });
 
 app.post('/api/verify-bet', async (req, res) => {
-    const { signature, direction, userPubKey } = req.body; // Removed 'amount' from body, we trust chain
+    const { signature, direction, userPubKey } = req.body;
 
     if (!signature || !userPubKey) return res.status(400).json({ error: "MISSING_DATA" });
 
@@ -155,23 +155,27 @@ app.post('/api/verify-bet', async (req, res) => {
 
         const solAmount = lamports / 1000000000;
 
-        // CALCULATE SHARES PURCHASED
-        // Based on price AT EXECUTION time
-        const totalVol = gameState.poolVolume.up + gameState.poolVolume.down;
-        let price = 0.5; // default
+        // CALCULATE PRICE & SHARES
+        const totalShares = gameState.poolShares.up + gameState.poolShares.down;
+        let price = 0.5; 
         
         if (direction === 'UP') {
-            price = gameState.poolVolume.up / totalVol;
-            gameState.poolVolume.up += solAmount;
+            price = gameState.poolShares.up / totalShares;
         } else {
-            price = gameState.poolVolume.down / totalVol;
-            gameState.poolVolume.down += solAmount;
+            price = gameState.poolShares.down / totalShares;
         }
 
-        // Avoid price=0 edge case
+        // Safety floor
         if(price < 0.01) price = 0.01;
 
-        const shares = solAmount / price;
+        const sharesReceived = solAmount / price;
+
+        // Add new shares to the pool, affecting future price
+        if (direction === 'UP') {
+            gameState.poolShares.up += sharesReceived;
+        } else {
+            gameState.poolShares.down += sharesReceived;
+        }
 
         gameState.bets.push({
             signature,
@@ -179,14 +183,14 @@ app.post('/api/verify-bet', async (req, res) => {
             direction,
             costSol: solAmount,
             entryPrice: price,
-            shares: shares,
+            shares: sharesReceived,
             timestamp: Date.now()
         });
 
         saveState();
         
-        console.log(`> TRADE: ${userPubKey} bought ${shares.toFixed(2)} ${direction} shares for ${solAmount} SOL`);
-        res.json({ success: true, shares: shares, price: price });
+        console.log(`> TRADE: ${userPubKey} bought ${sharesReceived.toFixed(2)} ${direction} shares for ${solAmount} SOL @ ${price.toFixed(2)}`);
+        res.json({ success: true, shares: sharesReceived, price: price });
 
     } catch (e) {
         console.error(e);
