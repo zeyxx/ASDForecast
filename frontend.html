@@ -1,0 +1,586 @@
+<!-- ASDForecast v100.3 // MAINNET HELIUS INTEGRATION -->
+
+<!-- Dependencies -->
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/@solana/web3.js@latest/lib/index.iife.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Comic+Neue:wght@400;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+
+<style>
+    /* THEME: Terminal / Fire */
+    #asd-app {
+        font-family: 'Comic Neue', cursive; 
+        background-color: #451a03; 
+        color: #ffedd5;
+        min-height: 1700px;
+        position: relative;
+        border: 6px solid #7c2d12;
+        border-radius: 16px;
+        overflow: hidden;
+    }
+    #asd-app .font-mono { font-family: 'JetBrains Mono', monospace; }
+
+    .panel {
+        background: rgba(20, 10, 5, 0.6);
+        border: 2px solid #ea580c;
+        border-radius: 8px;
+        box-shadow: 4px 4px 0 #9a3412;
+    }
+
+    .ticker-wrap {
+        width: 100%;
+        background-color: #2a1005;
+        border-bottom: 2px solid #7c2d12;
+        overflow: hidden;
+        white-space: nowrap;
+        height: 32px;
+        display: flex;
+        align-items: center;
+    }
+    .ticker {
+        display: inline-block;
+        padding-left: 100%;
+        animation: marquee 27s linear infinite;
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 12px;
+    }
+    .ticker-wrap:hover .ticker { animation-duration: 54s; }
+    .ticker-item { display: inline-block; padding: 0 20px; color: #fb923c; }
+    @keyframes marquee { 0% { transform: translate(0, 0); } 100% { transform: translate(-100%, 0); } }
+
+    .bar-container { height: 24px; background: #2a1005; border-radius: 12px; overflow: hidden; border: 1px solid #7c2d12; display: flex; }
+    .bar-fill { height: 100%; transition: width 0.5s ease; }
+    .bg-up { background: #22c55e; }
+    .bg-down { background: #ef4444; }
+
+    .input-qty { background: #2a1005; border: 2px solid #ea580c; color: white; text-align: center; font-family: 'JetBrains Mono'; font-size: 1.25rem; outline: none; }
+    .input-qty:focus { border-color: #fb923c; }
+    input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; }
+
+    .btn-market { text-transform: uppercase; font-weight: bold; transition: all 0.1s; border: 2px solid; }
+    .btn-market:active:not(:disabled) { transform: translate(2px, 2px); }
+    .btn-market:disabled { opacity: 0.5; cursor: not-allowed; filter: grayscale(100%); transform: none; }
+    
+    .btn-up { background: #14532d; border-color: #22c55e; color: #4ade80; }
+    .btn-up:hover:not(:disabled) { background: #166534; }
+    .btn-down { background: #7f1d1d; border-color: #ef4444; color: #fca5a5; }
+    .btn-down:hover:not(:disabled) { background: #991b1b; }
+
+    #wallet-modal { z-index: 9999; }
+    
+    /* HISTORY SCROLL CSS */
+    .history-collapsed { max-height: auto; overflow: hidden; }
+    .history-expanded { max-height: 300px; overflow-y: auto; border-bottom: 1px solid #ea580c; }
+    .history-expanded::-webkit-scrollbar { width: 8px; }
+    .history-expanded::-webkit-scrollbar-track { background: #2a1005; }
+    .history-expanded::-webkit-scrollbar-thumb { background: #ea580c; border-radius: 4px; }
+</style>
+
+<div id="asd-app">
+    <div class="ticker-wrap"><div id="ticker-content" class="ticker"><div class="ticker-item">Watching the world burn...</div></div></div>
+
+    <div class="p-6">
+        <!-- HEADER -->
+        <div class="flex flex-col md:flex-row justify-between items-center mb-8 border-b-4 border-orange-900 pb-4">
+            <div class="flex items-center gap-4 mb-4 md:mb-0">
+                <div class="text-6xl animate-bounce">🔥</div>
+                <div>
+                    <h1 class="text-4xl font-bold text-white">ASDForecast</h1>
+                    <p class="text-orange-300">15m Solana Binary Prediction Market</p>
+                </div>
+            </div>
+            <div class="flex items-center gap-4">
+                <div class="flex flex-col items-end">
+                    <div id="top-status-indicator" class="flex items-center gap-2 text-xs font-mono bg-black/40 px-3 py-2 rounded border border-red-900/50 text-red-500 transition-colors duration-500">
+                        <span id="status-dot" class="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span>
+                        <span id="status-text">OFFLINE</span>
+                    </div>
+                    <div id="last-updated" class="text-[10px] font-mono text-orange-500/50 mt-1 mr-1">Last Update: --:--:--</div>
+                </div>
+                <button id="connect-btn" class="bg-orange-600 border-2 border-orange-800 text-white px-6 py-2 rounded shadow-lg font-bold hover:bg-orange-500">Connect Phantom</button>
+            </div>
+        </div>
+
+        <!-- MAIN GRID -->
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 mb-8">
+            <!-- LEFT: DATA -->
+            <div class="lg:col-span-7 space-y-6">
+                <div class="panel p-6">
+                    <div class="flex justify-between items-start">
+                        <div>
+                            <h3 class="text-xs font-bold text-orange-500 uppercase">SOL/USD (15m Change)</h3>
+                            <div class="flex items-baseline gap-3">
+                                <span id="price" class="text-5xl font-mono font-bold text-white">$---.--</span>
+                                <span id="change" class="text-2xl font-mono font-bold">--</span>
+                            </div>
+                            <div class="mt-2 text-[10px] font-mono text-orange-500/70 flex gap-4">
+                                <span>OPEN: <span id="frame-start" class="text-white">SYNCING...</span></span>
+                                <span>CLOSE: <span id="frame-end" class="text-white">SYNCING...</span></span>
+                            </div>
+                        </div>
+                        <div class="text-right">
+                            <h3 class="text-xs font-bold text-orange-500 uppercase">Next Reset</h3>
+                            <div id="timer" class="text-4xl font-mono font-bold text-yellow-400">--:--</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- SENTIMENT -->
+                <div class="panel p-6 bg-black/20 relative">
+                    <h3 id="net-shares-header" class="text-lg font-bold text-white mb-4">Net Shares Bought</h3>
+                    <div class="flex justify-between text-sm font-bold font-mono text-white mb-1">
+                        <span class="text-green-400">UP: <span id="lbl-shares-up">0</span></span>
+                        <span class="text-red-400">DOWN: <span id="lbl-shares-down">0</span></span>
+                    </div>
+                    <div class="bar-container mb-4">
+                        <div id="bar-up" class="bar-fill bg-up" style="width: 50%"></div>
+                        <div id="bar-down" class="bar-fill bg-down" style="width: 50%"></div>
+                    </div>
+                    <div class="grid grid-cols-2 gap-4 text-center text-xs font-mono text-orange-500/80">
+                        <div><div class="text-sm font-bold text-white">Price: <span id="lbl-price-up">0.050</span> SOL</div><div class="flex justify-center gap-2 mt-1 text-[10px]"><span>1m: <span id="up-1m">0%</span></span><span>5m: <span id="up-5m">0%</span></span></div></div>
+                        <div><div class="text-sm font-bold text-white">Price: <span id="lbl-price-down">0.050</span> SOL</div><div class="flex justify-center gap-2 mt-1 text-[10px]"><span>1m: <span id="down-1m">0%</span></span><span>5m: <span id="down-5m">0%</span></span></div></div>
+                    </div>
+                    <div class="mt-4 flex justify-center"><div class="bg-black/40 border border-orange-900/30 rounded px-4 py-1 text-center shadow-inner"><span class="text-[10px] text-orange-400 uppercase block tracking-widest opacity-70">Current Frame Pot</span><span id="current-pot" class="text-lg font-mono font-bold text-white">0.000 SOL</span></div></div>
+                </div>
+
+                <!-- HISTORY -->
+                <div class="panel p-6 bg-black/40">
+                    <div class="flex justify-between items-center mb-4"><h3 class="text-lg font-bold text-white">Previous Frames</h3><span id="history-count" class="text-xs text-orange-500 font-mono"></span></div>
+                    
+                    <!-- SCROLLABLE CONTAINER -->
+                    <div id="history-container" class="history-collapsed">
+                        <table class="w-full text-sm font-mono text-left">
+                            <thead class="text-orange-500 border-b border-orange-900/50 sticky top-0 bg-[#1d120e] z-10"><tr><th class="pb-2">Time (UTC)</th><th class="pb-2">Result</th><th class="pb-2">Open</th><th class="pb-2">Close</th><th class="pb-2">Volume</th><th class="pb-2">Your Status</th></tr></thead>
+                            <tbody id="history-rows" class="text-orange-200/80"><tr><td colspan="6" class="py-2 italic opacity-50">Waiting for first frame close...</td></tr></tbody>
+                        </table>
+                    </div>
+                    
+                    <button id="btn-expand-history" onclick="window.toggleHistory()" class="w-full py-2 text-xs text-orange-500/50 hover:text-orange-500 hover:bg-orange-900/20 mt-2 font-mono border-t border-dashed border-orange-900/30 transition-colors hidden">[ + ] EXPAND / COLLAPSE (LAST 50)</button>
+                </div>
+            </div>
+
+            <!-- RIGHT: TERMINAL -->
+            <div class="lg:col-span-5">
+                <div class="panel h-full p-6 flex flex-col justify-between bg-[#2a1208]">
+                    <div class="mb-6 border-b border-orange-900/50 pb-4">
+                        <div class="flex justify-between items-center text-xs text-orange-400 font-mono mb-1"><span>AVAILABLE BALANCE</span><div class="flex items-center gap-3"><button id="disconnect-btn" class="text-red-500 hover:text-red-400 underline hidden font-bold">[ DISCONNECT ]</button><button onclick="refreshBalance()" class="hover:text-white" title="Refresh">↻</button></div></div>
+                        <div class="text-2xl font-mono font-bold text-white mb-4"><span id="balance">0.0000</span> SOL</div>
+
+                        <div id="user-stats-container" class="hidden space-y-3">
+                            <div class="grid grid-cols-2 gap-2 text-xs font-mono bg-black/30 p-2 rounded"><div><span class="text-orange-500 block">WIN RATE</span><span id="stat-winrate" class="text-white font-bold text-lg">0%</span></div><div><span class="text-orange-500 block">TOTAL WAGERED</span><span id="stat-volume" class="text-white font-bold text-lg">0 SOL</span></div></div>
+                            
+                            <div class="bg-orange-900/20 p-2 rounded border border-orange-500/30 text-xs font-mono">
+                                <span class="text-orange-400 block mb-1 uppercase tracking-wider">Current Frame Position</span>
+                                <div class="flex justify-between mb-1">
+                                    <span class="text-green-400">UP: <span id="stat-active-up">0</span> <span class="text-gray-500">(0.00 SOL)</span></span>
+                                    <span class="text-red-400">DOWN: <span id="stat-active-down">0</span> <span class="text-gray-500">(0.00 SOL)</span></span>
+                                </div>
+                                <div class="flex justify-between items-center border-t border-orange-500/20 pt-1 mt-1"><span class="text-orange-300/70">Est. Win Payout:</span><span id="stat-payout" class="text-yellow-400 font-bold">0.00 SOL</span></div>
+                            </div>
+                            
+                            <div class="bg-black/50 p-2 rounded border border-orange-900/50 text-xs font-mono"><span class="text-gray-400 block mb-1 uppercase tracking-wider text-[10px]">Last Frame Performance</span><div id="last-frame-stats" class="text-orange-200">Waiting for close...</div></div>
+                        </div>
+                    </div>
+
+                    <!-- ORDER FORM -->
+                    <div id="order-form" class="opacity-50 pointer-events-none relative">
+                        <div id="pause-overlay" class="hidden absolute inset-0 bg-black/80 z-50 flex flex-col items-center justify-center text-center rounded"><span class="text-3xl">🛑</span><span class="text-red-500 font-bold text-xl">MARKET PAUSED</span><span class="text-xs text-orange-300 mt-2">Maintenance / Refund Mode</span></div>
+                        <h2 class="text-xl font-bold text-white mb-4">Fuel the Fire</h2>
+                        <div class="mb-6">
+                            <label class="block text-xs font-bold text-orange-500 uppercase mb-2">Kindling (Shares)</label>
+                            <div class="flex items-center gap-2"><button id="btn-dec" class="w-10 h-10 bg-orange-900 text-white rounded font-bold hover:bg-orange-800">-</button><input type="number" id="qty-input" class="input-qty w-full p-2 rounded" value="10" min="1" step="1"><button id="btn-inc" class="w-10 h-10 bg-orange-900 text-white rounded font-bold hover:bg-orange-800">+</button></div>
+                        </div>
+                        <div class="grid grid-cols-2 gap-4 mb-4">
+                            <div class="bg-green-900/20 p-2 rounded border border-green-900/50 text-center"><div class="text-[10px] text-green-400 uppercase">Burn Rate (UP)</div><div id="cost-up" class="text-lg font-mono font-bold text-green-300">0.000 SOL</div></div>
+                            <div class="bg-red-900/20 p-2 rounded border border-red-900/50 text-center"><div class="text-[10px] text-red-400 uppercase">Burn Rate (DOWN)</div><div id="cost-down" class="text-lg font-mono font-bold text-red-300">0.000 SOL</div></div>
+                        </div>
+                        <div class="space-y-3">
+                            <button id="btn-buy-up" onclick="buy('UP')" class="btn-market btn-up w-full py-4 rounded shadow-lg text-left px-4 hover:border-green-400 transition-all group"><span class="text-xl font-bold block">IT'S FINE (UP) 📈</span><span class="text-[10px] font-mono opacity-70 group-hover:opacity-100">I am okay with the events that are unfolding.</span></button>
+                            <button id="btn-buy-down" onclick="buy('DOWN')" class="btn-market btn-down w-full py-4 rounded shadow-lg text-left px-4 hover:border-red-400 transition-all group"><span class="text-xl font-bold block">IT BURNS (DOWN) 🔥</span><span class="text-[10px] font-mono opacity-70 group-hover:opacity-100">Everything is melting.</span></button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- STATS -->
+        <div class="panel p-4 bg-black/40 mb-8">
+            <div class="flex flex-col sm:flex-row justify-between items-center text-center sm:text-left gap-4">
+                <div><h3 class="text-xs font-bold text-orange-500 uppercase tracking-wider mb-1">Global Damage Report</h3><p class="text-[10px] text-orange-300/60 font-mono">Updates Live</p></div>
+                <div class="flex gap-8">
+                    <div><span class="block text-[10px] text-orange-400 font-mono uppercase">Total Lifetime Volume</span><span id="global-vol" class="text-xl font-bold font-mono text-white">0.00 SOL</span></div>
+                    <div><span class="block text-[10px] text-orange-400 font-mono uppercase">Ash Pile (Fees)</span><span id="global-fees" class="text-xl font-bold font-mono text-red-400">0.00 SOL</span></div>
+                    <div><span class="block text-[10px] text-orange-400 font-mono uppercase">ASDF Purchased</span><span id="global-asdf" class="text-xl font-bold font-mono text-yellow-400">0 ASDF</span></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ABOUT SECTION (FULLY EXPANDED) -->
+        <div class="panel p-6 bg-black/40">
+            <button onclick="window.toggleAbout()" class="w-full text-left flex justify-between items-center text-orange-400 hover:text-white transition-colors"><span class="font-bold text-lg font-mono">>> METHODOLOGY & MECHANICS</span><span id="about-icon">[ + ]</span></button>
+            <div id="about-content" class="hidden mt-4 text-sm text-orange-200/80 font-mono space-y-6 border-t border-orange-900/50 pt-4">
+                
+                <!-- 1. OBJECTIVE -->
+                <div>
+                    <strong class="text-white block mb-1 text-base border-l-4 border-orange-500 pl-2">1. OBJECTIVE</strong>
+                    <p class="leading-relaxed">The room is on fire. The price of Solana is moving. Predict if the candle will close <strong>HIGHER (This is Fine)</strong> or <strong>LOWER (It Burns)</strong> relative to the start of the 15-minute frame. Frames are aligned to the blockchain timestamp and operate in a continuous 15-minute cycle. The "Open Price" is locked exactly at the start of the frame, and the "Close Price" is determined at the moment the frame ends.</p>
+                </div>
+                
+                <!-- 2. MECHANICS -->
+                <div>
+                    <strong class="text-white block mb-1 text-base border-l-4 border-orange-500 pl-2">2. PARIMUTUEL MECHANICS</strong>
+                    <p class="mb-2 leading-relaxed">This is a peer-to-peer parimutuel market. There is no "House" taking the other side of your bet; you are betting against other users. Winners divide the losers' money proportionally.</p>
+                    <ul class="list-disc list-inside ml-2 space-y-2 text-orange-100/80">
+                        <li><strong>Shares:</strong> You buy "Shares" of a direction (UP or DOWN). One Share represents a claim on a portion of the final pot.</li>
+                        <li><strong>Dynamic Pricing:</strong> The cost of 1 Share is not fixed. It fluctuates based on the ratio of money in the UP pool vs the DOWN pool. If 90% of the money is on UP, UP shares are expensive (low reward), and DOWN shares are cheap (high reward).</li>
+                        <li><strong>No Odds Until Close:</strong> Unlike fixed-odds betting, your final payout multiplier is determined by the pool state at the moment the frame closes.</li>
+                    </ul>
+                </div>
+
+                <!-- 3. PRICING -->
+                <div>
+                    <strong class="text-white block mb-1 text-base border-l-4 border-orange-500 pl-2">3. PRICING FORMULA</strong>
+                    <p class="mb-2">The system maintains a constant invariant: <code>Price(UP) + Price(DOWN) = 0.1 SOL</code>.</p>
+                    <div class="bg-black/50 p-3 rounded border border-orange-900/50 font-mono text-xs text-green-400">
+                        Share Price = (Liquidity_In_Direction / Total_Liquidity) * 0.1
+                    </div>
+                    <p class="mt-2 text-xs text-gray-500">Note: A small virtual liquidity buffer (50 shares) is applied to both sides at the start of a frame to prevent infinite price swings on the very first bet.</p>
+                </div>
+
+                <!-- 4. PAYOUTS -->
+                <div>
+                    <strong class="text-white block mb-1 text-base border-l-4 border-orange-500 pl-2">4. PAYOUTS & FEES</strong>
+                    <ul class="list-disc list-inside ml-2 space-y-2 text-orange-100/80 text-xs">
+                        <li><strong>THE ASH PILE (FEES):</strong> 5.52% of the Total Volume (all wagers combined) is deducted automatically. This revenue is sent to the Fee Wallet to buy back and burn <strong>$ASDFASDFA</strong>.</li>
+                        <li><strong>House Reserve:</strong> 0.48% is retained to cover Solana network rent and transaction gas fees.</li>
+                        <li><strong>The Winner's Pot:</strong> The remaining 94% of the Total Volume is the pot.</li>
+                        <li><strong>Distribution:</strong> the pot is then distributed to winners divided among them based on how many shares they own, proportional to the total amount of winning shares.</li>
+                        <li class="text-red-400"><strong>TOTAL MELTDOWN (FLAT MARKET):</strong> If the Open Price and Close Price are identical (0.00% Change), nobody wins. The house burns down. 99% of the pot is sent to the incinerator (Fee Wallet).</li>
+                        <li class="text-red-400"><strong>THE HEDGE PARADOX:</strong> If you hold an exact equal amount of UP and DOWN shares (a flat position), you have signaled no conviction. The system treats this as a LOSS, regardless of the outcome. You will receive 0 payout.</li>
+                    </ul>
+                </div>
+
+                <!-- 5. SCENARIOS -->
+                <div>
+                    <strong class="text-white block mb-1 text-base border-l-4 border-orange-500 pl-2">5. PAYOUT SCENARIOS (EXAMPLES)</strong>
+                    <div class="space-y-3 text-xs mt-2">
+                        <div class="bg-black/30 p-3 rounded border-l-2 border-green-500">
+                            <span class="text-green-400 font-bold block mb-1">Scenario A: The Crowd Follower (Consensus)</span>
+                            <p class="opacity-80">
+                                <strong>The Situation:</strong> The market is bullish. 90 SOL is on UP, 10 SOL is on DOWN.<br>
+                                <strong>Your Bet:</strong> You bet 1 SOL on UP.<br>
+                                <strong>The Outcome:</strong> UP Wins.<br>
+                                <strong>The Math:</strong> The Pot is ~94 SOL. You own roughly 1.1% of the winning pool.<br>
+                                <strong>Result:</strong> You receive ~1.04 SOL back. A small, safe 4% profit.
+                            </p>
+                        </div>
+                        <div class="bg-black/30 p-3 rounded border-l-2 border-yellow-500">
+                            <span class="text-yellow-400 font-bold block mb-1">Scenario B: The Contrarian (Longshot)</span>
+                            <p class="opacity-80">
+                                <strong>The Situation:</strong> The market is bullish (90 SOL UP vs 10 SOL DOWN).<br>
+                                <strong>Your Bet:</strong> You bet 1 SOL on DOWN (The Underdog).<br>
+                                <strong>The Outcome:</strong> DOWN Wins.<br>
+                                <strong>The Math:</strong> The Pot is ~94 SOL. You own roughly 10% of the winning pool (since the pool is small).<br>
+                                <strong>Result:</strong> You receive ~9.40 SOL back. A massive 840% profit for betting against the crowd.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- DISCLAIMER -->
+                <div class="mt-6 border-t-2 border-red-900/50 pt-4 bg-red-900/10 p-4 rounded">
+                    <strong class="text-red-500 block mb-1 text-lg">⚠️ DISCLAIMER & RISK WARNING</strong>
+                    <p class="text-xs text-orange-200 leading-relaxed">
+                        This platform is currently LIVE on Solana Mainnet. The operators are not responsible for lost funds, smart contract errors, oracle latency, or network failures.
+                        <br><br>
+                        <strong>PREDICT RESPONSIBLY:</strong> Never wager funds you cannot afford to lose. This is an experimental technology demonstration.
+                    </p>
+                </div>
+            </div>
+        </div>
+        <div class="text-center text-xs text-gray-500 font-mono pt-2 border-t border-orange-900/50"><span class="text-orange-400">Frontend v100.3</span> | Backend <span id="backend-version">v---</span></div>
+    </div>
+</div>
+
+<script>
+    // --- CRITICAL CONFIGURATION ---
+    const HOUSE_PUBKEY = "BXSp5y6Ua6tB5fZDe1EscVaaEaZLg1yqzrsPqAXhKJYy"; // MAINNET WALLET
+    const API_URL = 'https://asdforecast.onrender.com/api'; 
+    const HELIUS_RPC_URL = "https://mainnet.helius-rpc.com/?api-key=3ce79dab-c031-4ebe-a060-edc91bf0edee"; // Frontend-Specific RPC
+    
+    let PublicKey, SystemProgram, Transaction;
+    let state = { pubKey: null, prices: { up: 0.05, down: 0.05 }, conn: null, fullHistory: [], lastFrameId: null, userLog: {}, isHistoryExpanded: false, isAboutExpanded: false, isOnline: false, targetEndTime: null };
+    let ui = {};
+
+    window.addEventListener('load', () => {
+        if (window.solanaWeb3) {
+            PublicKey = solanaWeb3.PublicKey;
+            SystemProgram = solanaWeb3.SystemProgram;
+            Transaction = solanaWeb3.Transaction;
+            
+            // FIX: Use Helius RPC for the browser connection to bypass 403 errors
+            state.conn = new solanaWeb3.Connection(HELIUS_RPC_URL, {
+                commitment: 'confirmed',
+                confirmTransactionInitialTimeout: 60000
+            });
+        }
+        
+        ui = {
+            price: document.getElementById('price'), change: document.getElementById('change'), timer: document.getElementById('timer'),
+            frameStart: document.getElementById('frame-start'), frameEnd: document.getElementById('frame-end'),
+            barUp: document.getElementById('bar-up'), barDown: document.getElementById('bar-down'),
+            lblSharesUp: document.getElementById('lbl-shares-up'), lblSharesDown: document.getElementById('lbl-shares-down'),
+            lblPriceUp: document.getElementById('lbl-price-up'), lblPriceDown: document.getElementById('lbl-price-down'),
+            up1m: document.getElementById('up-1m'), up5m: document.getElementById('up-5m'), down1m: document.getElementById('down-1m'), down5m: document.getElementById('down-5m'),
+            currentPot: document.getElementById('current-pot'), qty: document.getElementById('qty-input'),
+            costUp: document.getElementById('cost-up'), costDown: document.getElementById('cost-down'),
+            bal: document.getElementById('balance'), form: document.getElementById('order-form'),
+            connect: document.getElementById('connect-btn'), disconnect: document.getElementById('disconnect-btn'),
+            historyRows: document.getElementById('history-rows'), historyContainer: document.getElementById('history-container'), btnExpand: document.getElementById('btn-expand-history'),
+            statsContainer: document.getElementById('user-stats-container'), statWin: document.getElementById('stat-winrate'), statVol: document.getElementById('stat-volume'),
+            statActUp: document.getElementById('stat-active-up'), statActDown: document.getElementById('stat-active-down'),
+            statPayout: document.getElementById('stat-payout'), lastFrameStats: document.getElementById('last-frame-stats'),
+            aboutContent: document.getElementById('about-content'), aboutIcon: document.getElementById('about-icon'),
+            statGlobalVol: document.getElementById('global-vol'), statGlobalFees: document.getElementById('global-fees'), statGlobalASDF: document.getElementById('global-asdf'),
+            topStatus: document.getElementById('top-status-indicator'), ticker: document.getElementById('ticker-content'),
+            lastUpdated: document.getElementById('last-updated'), netSharesHeader: document.getElementById('net-shares-header'),
+            btnUp: document.getElementById('btn-buy-up'), btnDown: document.getElementById('btn-buy-down'),
+            btnInc: document.getElementById('btn-inc'), btnDec: document.getElementById('btn-dec'),
+            pauseOverlay: document.getElementById('pause-overlay'), statusText: document.getElementById('status-text'),
+            backendVersion: document.getElementById('backend-version'), statusDot: document.getElementById('status-dot')
+        };
+
+        // Manual listeners
+        if(ui.btnInc) ui.btnInc.onclick = () => adjustQty(1);
+        if(ui.btnDec) ui.btnDec.onclick = () => adjustQty(-1);
+
+        ui.connect.onclick = connect;
+        ui.disconnect.onclick = disconnectWallet;
+        ui.qty.oninput = () => { ui.qty.value = Math.floor(Math.max(1, ui.qty.value)); updateCosts(); };
+
+        setInterval(poll, 2000);
+        setInterval(updateTimer, 1000);
+        poll();
+        setTimeout(() => { if(window.solana?.isPhantom) window.solana.connect({onlyIfTrusted:true}).then(onConnect).catch(()=>{}); }, 500);
+    });
+
+    function updateTimer() {
+        if (!state.targetEndTime) return;
+        const now = Date.now();
+        let diff = state.targetEndTime - now;
+        if (diff < 0) diff = 0;
+        const m = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+        const s = Math.floor((diff % (1000 * 60)) / 1000);
+        if(ui.timer) ui.timer.innerText = `${m}:${s.toString().padStart(2, '0')}`;
+    }
+
+    function formatChange(el, val) { if (!val) val = 0; const sign = val >= 0 ? '+' : ''; const color = val > 0 ? 'text-green-400' : (val < 0 ? 'text-red-400' : 'text-gray-400'); el.innerHTML = `<span class="${color}">${sign}${val.toFixed(2)}%</span>`; }
+    
+    // GLOBAL SCOPE FOR ONCLICK
+    window.toggleHistory = function() {
+        state.isHistoryExpanded = !state.isHistoryExpanded;
+        const container = ui.historyContainer;
+        if (state.isHistoryExpanded) {
+            ui.btnExpand.innerText = "[ - ] COLLAPSE HISTORY";
+            container.classList.remove('history-collapsed');
+            container.classList.add('history-expanded');
+        } else {
+            ui.btnExpand.innerText = "[ + ] EXPAND / COLLAPSE (LAST 50)";
+            container.classList.remove('history-expanded');
+            container.classList.add('history-collapsed');
+        }
+        renderHistory();
+    };
+
+    window.toggleAbout = function() {
+        state.isAboutExpanded = !state.isAboutExpanded;
+        if (state.isAboutExpanded) {
+            ui.aboutContent.classList.remove('hidden');
+            ui.aboutIcon.innerText = "[ - ]";
+        } else {
+            ui.aboutContent.classList.add('hidden');
+            ui.aboutIcon.innerText = "[ + ]";
+        }
+    };
+
+    async function connect() { try { await window.solana.connect(); onConnect(await window.solana.connect()); } catch(e){} }
+    async function disconnectWallet() { if(window.solana) await window.solana.disconnect(); state.pubKey = null; state.userLog = {}; ui.connect.innerText = "Connect Phantom"; ui.form.classList.add('opacity-50', 'pointer-events-none'); ui.disconnect.classList.add('hidden'); ui.bal.innerText = "0.0000"; ui.statsContainer.classList.add('hidden'); renderHistory(); }
+    function onConnect(resp) { state.pubKey = resp.publicKey; ui.connect.innerText = `👤 ${resp.publicKey.toString().slice(0,4)}...`; ui.form.classList.remove('opacity-50', 'pointer-events-none'); ui.disconnect.classList.remove('hidden'); refreshBalance(); poll(); }
+    async function refreshBalance() { if(state.pubKey) { const bal = await state.conn.getBalance(state.pubKey); ui.bal.innerText = (bal/1e9).toFixed(4); } }
+    function adjustQty(n) { if(ui.qty.disabled) return; let v = parseInt(ui.qty.value) + n; if(v < 1) v = 1; ui.qty.value = Math.floor(v); updateCosts(); }
+    function updateCosts() { const q = parseInt(ui.qty.value) || 0; if(state.prices.up && ui.costUp) { ui.costUp.innerText = (q * state.prices.up).toFixed(3) + " SOL"; ui.costDown.innerText = (q * state.prices.down).toFixed(3) + " SOL"; } }
+
+    function renderHistory() {
+        if (!state.fullHistory || state.fullHistory.length === 0) { ui.historyRows.innerHTML = '<tr><td colspan="6" class="py-2 italic opacity-50">Waiting for first frame close...</td></tr>'; return; }
+        const dataToShow = state.isHistoryExpanded ? state.fullHistory : state.fullHistory.slice(0, 3);
+        ui.historyRows.innerHTML = dataToShow.map(f => {
+            const time = new Date(f.time).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+            let resColor = f.result==='UP'?'text-green-400':(f.result==='DOWN'?'text-red-400':(f.result==='CANCELLED'?'text-red-600 font-bold':(f.result==='PAUSED'?'text-yellow-500 font-bold':'text-gray-400')));
+            let userStatus = '<span class="text-gray-600">-</span>';
+            
+            if (f.result === 'PAUSED') {
+                 userStatus = `<span class="text-yellow-500">SKIPPED</span>`;
+            } else if (f.result === 'CANCELLED') {
+                 if (state.userLog && state.userLog[f.id]) userStatus = `<span class="text-yellow-400 font-bold">REFUNDED</span>`;
+            } else if (state.userLog && state.userLog[f.id]) {
+                const log = state.userLog[f.id];
+                if (log.result === 'LOSS') userStatus = `<span class="text-red-500 font-bold">LOSS (${(log.wagered||0).toFixed(3)})</span>`;
+                else if (log.payoutTx) userStatus = `<a href="https://solscan.io/tx/${log.payoutTx}" target="_blank" class="text-green-400 underline">WIN (+${log.payoutAmount?.toFixed(3)})</a>`;
+                else if (log.result === 'WIN') userStatus = `<span class="text-green-600">WIN (Processing)</span>`;
+            }
+            return `<tr class="border-b border-orange-900/20"><td class="py-2">${time}</td><td class="py-2 font-bold ${resColor}">${f.result}</td><td class="py-2">$${(f.open||0).toFixed(2)}</td><td class="py-2">$${(f.close||0).toFixed(2)}</td><td class="py-2">${(f.totalSol||0).toFixed(2)}</td><td class="py-2">${userStatus}</td></tr>`;
+        }).join('');
+        if(state.fullHistory.length > 3) ui.btnExpand.classList.remove('hidden');
+    }
+
+    function renderTicker(trades) {
+        if(!trades || !ui.ticker) return;
+        ui.ticker.innerHTML = trades.slice(0,10).map(t => `<div class="ticker-item">[ ${t.user.slice(0,4)}.. bought <span class="${t.direction==='UP'?'text-green-400':'text-red-400'}">${t.shares.toFixed(1)} ${t.direction}</span> ]</div>`).join('') + trades.slice(0,10).map(t => `<div class="ticker-item">[ ${t.user.slice(0,4)}.. bought <span class="${t.direction==='UP'?'text-green-400':'text-red-400'}">${t.shares.toFixed(1)} ${t.direction}</span> ]</div>`).join('');
+    }
+
+    async function poll() {
+        try {
+            let url = `${API_URL}/state`;
+            if(state.pubKey) url += `?user=${state.pubKey.toString()}`;
+            const res = await fetch(url);
+            if(!res.ok) throw new Error(res.statusText);
+            const data = await res.json();
+            
+            state.isOnline = true;
+            if(ui.statusText) { ui.statusText.innerText = "ONLINE"; ui.statusText.className = "text-green-400"; }
+            if(ui.topStatus) ui.topStatus.className = "flex items-center gap-2 text-xs font-mono bg-black/40 px-3 py-2 rounded border border-green-900/50 transition-colors duration-500";
+            if(ui.lastUpdated) ui.lastUpdated.innerText = `Last Update: ${new Date().toLocaleTimeString()}`;
+            if(data.backendVersion) ui.backendVersion.innerText = `v${data.backendVersion}`;
+
+            if (data.isResetting) {
+                ui.netSharesHeader.innerText = "CALCULATING RESULTS..."; ui.netSharesHeader.classList.add("text-blue-400", "animate-pulse"); ui.netSharesHeader.classList.remove("text-red-500");
+                ui.btnUp.disabled = true; ui.btnDown.disabled = true; ui.qty.disabled = true;
+                ui.pauseOverlay.classList.remove('hidden');
+            }
+            else if (data.isPaused) {
+                ui.netSharesHeader.innerText = "MARKET PAUSED"; ui.netSharesHeader.classList.add("text-red-500"); 
+                ui.btnUp.disabled = true; ui.btnDown.disabled = true; ui.qty.disabled = true;
+                ui.pauseOverlay.classList.remove('hidden');
+                ui.statusText.innerText = "PAUSED"; ui.statusText.className = "text-yellow-500";
+                ui.topStatus.className = "flex items-center gap-2 text-xs font-mono bg-black/40 px-3 py-2 rounded border border-yellow-900/50";
+            } else {
+                ui.netSharesHeader.innerText = "Net Shares Bought"; ui.netSharesHeader.classList.remove("text-red-500");
+                ui.btnUp.disabled = false; ui.btnDown.disabled = false; ui.qty.disabled = false;
+                ui.pauseOverlay.classList.add('hidden');
+            }
+
+            // SAFE RENDER BLOCKS
+            try {
+                if (data.market) {
+                    state.prices = { up: data.market.priceUp, down: data.market.priceDown };
+                    if(data.market.changes) { formatChange(ui.up1m, data.market.changes.up1m); formatChange(ui.up5m, data.market.changes.up5m); formatChange(ui.down1m, data.market.changes.down1m); formatChange(ui.down5m, data.market.changes.down5m); }
+                    const nU = Math.max(0, data.market.sharesUp-50), nD = Math.max(0, data.market.sharesDown-50);
+                    ui.lblSharesUp.innerText = nU.toFixed(0); ui.lblSharesDown.innerText = nD.toFixed(0);
+                    const total = nU + nD || 1;
+                    ui.barUp.style.width = `${(nU/total)*100}%`; ui.barDown.style.width = `${(nD/total)*100}%`;
+                    ui.lblPriceUp.innerText = state.prices.up.toFixed(3); ui.lblPriceDown.innerText = state.prices.down.toFixed(3);
+                }
+                
+                ui.price.innerText = `$${data.price.toFixed(2)}`;
+                const diff = data.price - data.openPrice;
+                const color = diff >= 0 ? 'text-green-400' : 'text-red-500';
+                ui.change.innerHTML = `<span class="${color}">${diff>=0?'+':''}${diff.toFixed(2)} (${data.change.toFixed(2)}%)</span>`;
+                
+                if(data.candleStartTime) {
+                     ui.frameStart.innerText = new Date(data.candleStartTime).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+                     ui.frameEnd.innerText = new Date(data.candleEndTime).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+                     state.targetEndTime = data.candleEndTime;
+                }
+
+                const ms = data.msUntilClose;
+                ui.timer.innerText = `${Math.floor((ms%(1000*60*60))/(1000*60))}:${Math.floor((ms%(1000*60))/1000).toString().padStart(2,'0')}`;
+                if(data.currentVolume !== undefined) ui.currentPot.innerText = `${data.currentVolume.toFixed(3)} SOL`;
+
+                state.fullHistory = data.history || [];
+                if(data.platformStats) {
+                    ui.statGlobalVol.innerText = `${data.platformStats.totalVolume.toFixed(2)} SOL`;
+                    ui.statGlobalFees.innerText = `${data.platformStats.totalFees.toFixed(3)} SOL`;
+                    if(data.platformStats.totalASDF) ui.statGlobalASDF.innerText = Math.round(data.platformStats.totalASDF).toLocaleString() + " ASDF";
+                }
+                if(data.userStats) {
+                    state.userLog = data.userStats.frameLog || {};
+                    ui.statsContainer.classList.remove('hidden');
+                    const total = data.userStats.wins + data.userStats.losses;
+                    const rate = total > 0 ? ((data.userStats.wins/total)*100).toFixed(0) : 0;
+                    ui.statWin.innerText = `${rate}% (${data.userStats.wins}/${total})`;
+                    ui.statVol.innerText = `${data.userStats.totalSol.toFixed(3)} SOL`;
+                    
+                    if (state.fullHistory.length > 0) {
+                        const last = state.fullHistory[0];
+                        if (state.userLog[last.id]) {
+                             const log = state.userLog[last.id];
+                             let res = log.result === 'WIN' ? `<span class="text-green-400">WIN</span>` : `<span class="text-red-400">LOSS</span>`;
+                             ui.lastFrameStats.innerHTML = `
+                                <div class="flex justify-between"><span>Vol:</span> <span>${last.totalSol.toFixed(2)} SOL</span></div>
+                                <div class="flex justify-between text-[10px] border-t border-white/10 pt-1 mt-1">
+                                    <span class="text-green-400">UP: ${Math.round(log.upShares||0)}</span> <span class="text-red-400">DOWN: ${Math.round(log.downShares||0)}</span>
+                                </div>
+                                <div class="flex justify-between border-t border-white/10 mt-1 pt-1"><span>Result:</span> ${res}</div>
+                             `;
+                        } else { ui.lastFrameStats.innerHTML = `<span class="italic opacity-50">Did not participate.</span>`; }
+                    }
+                }
+                renderHistory();
+                if(data.recentTrades) renderTicker(data.recentTrades);
+
+                if(data.activePosition) {
+                    const uS = data.activePosition.upShares || 0;
+                    const uV = data.activePosition.upSol || 0;
+                    const dS = data.activePosition.downShares || 0;
+                    const dV = data.activePosition.downSol || 0;
+
+                    // FORMAT: Shares (SOL)
+                    if (ui.statActUp) ui.statActUp.innerHTML = `${Math.round(uS)} <span class="text-gray-500">(${uV.toFixed(2)} SOL)</span>`;
+                    if (ui.statActDown) ui.statActDown.innerHTML = `${Math.round(dS)} <span class="text-gray-500">(${dV.toFixed(2)} SOL)</span>`;
+                    
+                    const pot = (data.currentVolume || 0) * 0.94;
+                    let est = 0;
+                    if (data.market) {
+                        if (uS > dS) {
+                            const totalRealUp = Math.max(1, data.market.sharesUp - 50);
+                            est = (uS / totalRealUp) * pot;
+                        } else if (dS > uS) {
+                            const totalRealDown = Math.max(1, data.market.sharesDown - 50);
+                            est = (dS / totalRealDown) * pot;
+                        }
+                    }
+                    ui.statPayout.innerText = est.toFixed(3) + " SOL";
+                }
+            } catch(e) { console.log("Stats Render Error", e); }
+            
+            updateCosts();
+
+        } catch(e) {
+            console.error(e);
+            state.isOnline = false;
+            if(ui.topStatus) ui.topStatus.className = "flex items-center gap-2 text-xs font-mono bg-black/40 px-3 py-2 rounded border border-red-900/50 transition-colors duration-500";
+            if(ui.statusText) { ui.statusText.innerText = "OFFLINE"; ui.statusText.className = "text-red-500"; }
+        }
+    }
+
+    async function buy(dir) {
+        if(!state.isOnline) return alert("System Offline");
+        const qty = parseInt(ui.qty.value);
+        const cost = qty * (dir==='UP'?state.prices.up:state.prices.down);
+        const btn = dir==='UP'?ui.btnUp:ui.btnDown;
+        const old = btn.innerHTML;
+        btn.innerHTML = "SIGNING..."; btn.disabled = true;
+
+        try {
+            const tx = new Transaction();
+            const { blockhash } = await state.conn.getLatestBlockhash();
+            tx.recentBlockhash = blockhash; tx.feePayer = state.pubKey;
+            tx.add(SystemProgram.transfer({ fromPubkey: state.pubKey, toPubkey: new PublicKey(HOUSE_PUBKEY), lamports: Math.round(cost * solanaWeb3.LAMPORTS_PER_SOL) }));
+            const sig = await window.solana.signAndSendTransaction(tx);
+            btn.innerHTML = "VERIFYING...";
+            await state.conn.confirmTransaction(sig.signature, 'confirmed');
+            const res = await fetch(`${API_URL}/verify-bet`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ signature: sig.signature, direction: dir, userPubKey: state.pubKey.toString() }) });
+            const d = await res.json();
+            if(d.success) { alert(`Bought ${Math.round(d.shares)} shares!`); refreshBalance(); } else alert(d.error);
+        } catch(e) { console.error(e); alert("Tx Failed"); } finally { btn.innerHTML = old; btn.disabled = false; }
+    }
+</script>
