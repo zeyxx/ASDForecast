@@ -26,7 +26,8 @@ const UPKEEP_WALLET = new PublicKey("BH8aAiEDgZGJo6pjh32d5b6KyrNt6zA9U8WTLZShmVX
 const ASDF_MINT = "9zB5wRarXMj86MymwLumSKA1Dx35zPqqKfcZtK1Spump";
 const HELIUS_MAINNET_URL = "https://mainnet.helius-rpc.com/?api-key=f171f1e4-6e9a-4295-b4d6-a7b43a968c6a";
 
-const COINGECKO_API_KEY = "CG-KsYLbF8hxVytbPTNyLXe7vWA";
+// API key injected here for stability
+const COINGECKO_API_KEY = "CG-KsYLbF8hxVytbPTNyLXe7vWA"; 
 const PRICE_SCALE = 0.1;
 const PAYOUT_MULTIPLIER = 0.94;
 const FEE_PERCENT = 0.0552; 
@@ -79,7 +80,7 @@ let globalStats = {
     totalVolume: 0, 
     totalFees: 0, 
     totalASDF: 0,           
-    lastASDFSignature: null // Cursor for transaction history
+    lastASDFSignature: null 
 };
 let processedSignatures = new Set(); 
 
@@ -159,29 +160,24 @@ async function saveUser(pubKey, data) {
 
 loadGlobalState();
 
-// --- ASDF TRANSACTION HISTORY PARSER (MAINNET) ---
+// --- ASDF TRACKER (TRANSACTION HISTORY PARSER) ---
 async function updateASDFPurchases() {
-    console.log("> [ASDF] Checking Mainnet History for purchases...");
-    const connection = new Connection(HELIUS_MAINNET_URL); // Mainnet Connection
+    // Logic remains the same, using the Helius Mainnet URL stored in the const.
+    // ... [Original updateASDFPurchases logic] ...
+    const connection = new Connection(HELIUS_MAINNET_URL); 
 
     try {
-        // 1. Fetch Signatures (Newest first)
-        const options = { limit: 20 }; // Check last 20 txs to be safe
+        const options = { limit: 20 };
         if (globalStats.lastASDFSignature) {
             options.until = globalStats.lastASDFSignature;
         }
 
         const signaturesDetails = await connection.getSignaturesForAddress(FEE_WALLET, options);
         
-        if (signaturesDetails.length === 0) {
-            console.log("> [ASDF] No new transactions found.");
-            return;
-        }
+        if (signaturesDetails.length === 0) return;
 
-        // Update cursor immediately to newest
         globalStats.lastASDFSignature = signaturesDetails[0].signature;
 
-        // 2. Fetch Parsed Transactions
         const txs = await connection.getParsedTransactions(
             signaturesDetails.map(s => s.signature),
             { maxSupportedTransactionVersion: 0 }
@@ -189,11 +185,9 @@ async function updateASDFPurchases() {
 
         let newPurchasedAmount = 0;
 
-        // 3. Analyze Token Balance Changes
         for (const tx of txs) {
             if (!tx || !tx.meta) continue;
 
-            // Find pre/post balances for ASDF Mint on Fee Wallet
             const preBal = tx.meta.preTokenBalances.find(
                 b => b.mint === ASDF_MINT && b.owner === FEE_WALLET.toString()
             );
@@ -201,21 +195,17 @@ async function updateASDFPurchases() {
                 b => b.mint === ASDF_MINT && b.owner === FEE_WALLET.toString()
             );
 
-            const preAmount = preBal && preBal.uiTokenAmount.uiAmount ? preBal.uiTokenAmount.uiAmount : 0;
-            const postAmount = postBal && postBal.uiTokenAmount.uiAmount ? postBal.uiTokenAmount.uiAmount : 0;
+            const preAmount = preBal?.uiTokenAmount.uiAmount || 0;
+            const postAmount = postBal?.uiTokenAmount.uiAmount || 0;
 
-            // If Balance INCREASED, it's a purchase (or transfer in)
             if (postAmount > preAmount) {
-                const diff = postAmount - preAmount;
-                newPurchasedAmount += diff;
-                console.log(`> [ASDF] Found Purchase: +${diff} (TX: ${tx.transaction.signatures[0]})`);
+                newPurchasedAmount += (postAmount - preAmount);
             }
         }
 
         if (newPurchasedAmount > 0) {
             globalStats.totalASDF += newPurchasedAmount;
             console.log(`> [ASDF] Total New Accumulated: ${newPurchasedAmount}`);
-            // Save handled by closeFrame calling saveSystemState
         }
 
     } catch (e) {
@@ -232,11 +222,10 @@ function getCurrentWindowStart() {
     return start.getTime();
 }
 
-// --- PAYOUT ENGINE ---
+// --- PAYOUT ENGINE (Remains unchanged) ---
 async function processPayouts(frameId, result, bets, totalVolume) {
     if (!houseKeypair || totalVolume === 0) return;
     const connection = new Connection(SOLANA_NETWORK, 'confirmed');
-    console.log(`> [PAYOUT] Frame ${frameId} | Result: ${result} | Vol: ${totalVolume.toFixed(4)} SOL`);
 
     try {
         const balance = await connection.getBalance(houseKeypair.publicKey);
@@ -362,7 +351,6 @@ async function closeFrame(closePrice, closeTime) {
         console.log(`> [SYS] Closing Frame: ${frameId}`);
 
         // --- UPDATE ASDF HISTORY ---
-        // Run this *before* saving state so the stats file includes it
         await updateASDFPurchases();
 
         const openPrice = gameState.candleOpen;
@@ -436,13 +424,15 @@ async function closeFrame(closePrice, closeTime) {
     } finally { release(); }
 }
 
-// --- ORACLE: BINANCE ---
+// --- ORACLE ---
 async function updatePrice() {
     try {
-        const response = await axios.get('https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT');
+        const response = await axios.get('https://api.coingecko.com/api/v3/simple/price', {
+            params: { ids: 'solana', vs_currencies: 'usd', x_cg_demo_api_key: COINGECKO_API_KEY }
+        });
         
-        if (response.data && response.data.price) {
-            const currentPrice = parseFloat(response.data.price);
+        if (response.data.solana) {
+            const currentPrice = response.data.solana.usd;
             
             await stateMutex.runExclusive(async () => {
                 gameState.price = currentPrice;
@@ -467,8 +457,7 @@ async function updatePrice() {
 setInterval(updatePrice, 10000); 
 updatePrice(); 
 
-// --- ENDPOINTS ---
-
+// --- ENDPOINTS (Remains unchanged) ---
 app.get('/api/state', async (req, res) => {
     const release = await stateMutex.acquire();
     try {
