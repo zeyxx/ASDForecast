@@ -9,6 +9,7 @@ const { Mutex } = require('async-mutex');
 
 const app = express();
 const stateMutex = new Mutex();
+const payoutMutex = new Mutex(); // Lock for payout queue
 
 app.use(cors({
     origin: 'https://www.alonisthe.dev',
@@ -22,12 +23,10 @@ const SOLANA_NETWORK = 'https://api.devnet.solana.com';
 const FEE_WALLET = new PublicKey("5xfyqaDzaj1XNvyz3gnuRJMSNUzGkkMbYbh2bKzWxuan");
 const UPKEEP_WALLET = new PublicKey("BH8aAiEDgZGJo6pjh32d5b6KyrNt6zA9U8WTLZShmVXq");
 
-// --- ASDF TRACKING CONFIG ---
+// --- CONFIG ---
 const ASDF_MINT = "9zB5wRarXMj86MymwLumSKA1Dx35zPqqKfcZtK1Spump";
 const HELIUS_MAINNET_URL = "https://mainnet.helius-rpc.com/?api-key=f171f1e4-6e9a-4295-b4d6-a7b43a968c6a";
-
-// API key injected here for stability
-const COINGECKO_API_KEY = "CG-KsYLbF8hxVytbPTNyLXe7vWA"; 
+const COINGECKO_API_KEY = "CG-KsYLbF8hxVytbPTNyLXe7vWA";
 const PRICE_SCALE = 0.1;
 const PAYOUT_MULTIPLIER = 0.94;
 const FEE_PERCENT = 0.0552; 
@@ -49,6 +48,7 @@ const STATE_FILE = path.join(DATA_DIR, 'state.json');
 const HISTORY_FILE = path.join(DATA_DIR, 'history.json');
 const STATS_FILE = path.join(DATA_DIR, 'global_stats.json');
 const SIGS_FILE = path.join(DATA_DIR, 'signatures.log'); 
+const QUEUE_FILE = path.join(DATA_DIR, 'payout_queue.json'); // Optimized Payout persistence
 
 console.log(`> [SYS] Persistence Root: ${DATA_DIR}`);
 
@@ -76,12 +76,7 @@ let gameState = {
     recentTrades: []
 };
 let historySummary = [];
-let globalStats = { 
-    totalVolume: 0, 
-    totalFees: 0, 
-    totalASDF: 0,           
-    lastASDFSignature: null 
-};
+let globalStats = { totalVolume: 0, totalFees: 0, totalASDF: 0, lastASDFSignature: null };
 let processedSignatures = new Set(); 
 
 // --- I/O ---
@@ -93,10 +88,12 @@ function loadGlobalState() {
             globalStats = { ...globalStats, ...loaded };
         }
         
+        // RAM OPTIMIZATION: Only load recent signatures to prevent memory bloat
         if (fsSync.existsSync(SIGS_FILE)) {
             const fileContent = fsSync.readFileSync(SIGS_FILE, 'utf-8');
             const lines = fileContent.split('\n');
-            lines.forEach(line => {
+            const recentLines = lines.slice(-2000); // Keep last 2000 signatures in RAM
+            recentLines.forEach(line => {
                 if(line.trim()) processedSignatures.add(line.trim());
             });
         }
@@ -160,57 +157,27 @@ async function saveUser(pubKey, data) {
 
 loadGlobalState();
 
-// --- ASDF TRACKER (TRANSACTION HISTORY PARSER) ---
+// --- ASDF TRACKER ---
 async function updateASDFPurchases() {
-    // Logic remains the same, using the Helius Mainnet URL stored in the const.
-    // ... [Original updateASDFPurchases logic] ...
     const connection = new Connection(HELIUS_MAINNET_URL); 
-
     try {
         const options = { limit: 20 };
-        if (globalStats.lastASDFSignature) {
-            options.until = globalStats.lastASDFSignature;
-        }
-
+        if (globalStats.lastASDFSignature) options.until = globalStats.lastASDFSignature;
         const signaturesDetails = await connection.getSignaturesForAddress(FEE_WALLET, options);
-        
         if (signaturesDetails.length === 0) return;
-
         globalStats.lastASDFSignature = signaturesDetails[0].signature;
-
-        const txs = await connection.getParsedTransactions(
-            signaturesDetails.map(s => s.signature),
-            { maxSupportedTransactionVersion: 0 }
-        );
-
+        const txs = await connection.getParsedTransactions(signaturesDetails.map(s => s.signature), { maxSupportedTransactionVersion: 0 });
         let newPurchasedAmount = 0;
-
         for (const tx of txs) {
             if (!tx || !tx.meta) continue;
-
-            const preBal = tx.meta.preTokenBalances.find(
-                b => b.mint === ASDF_MINT && b.owner === FEE_WALLET.toString()
-            );
-            const postBal = tx.meta.postTokenBalances.find(
-                b => b.mint === ASDF_MINT && b.owner === FEE_WALLET.toString()
-            );
-
+            const preBal = tx.meta.preTokenBalances.find(b => b.mint === ASDF_MINT && b.owner === FEE_WALLET.toString());
+            const postBal = tx.meta.postTokenBalances.find(b => b.mint === ASDF_MINT && b.owner === FEE_WALLET.toString());
             const preAmount = preBal?.uiTokenAmount.uiAmount || 0;
             const postAmount = postBal?.uiTokenAmount.uiAmount || 0;
-
-            if (postAmount > preAmount) {
-                newPurchasedAmount += (postAmount - preAmount);
-            }
+            if (postAmount > preAmount) newPurchasedAmount += (postAmount - preAmount);
         }
-
-        if (newPurchasedAmount > 0) {
-            globalStats.totalASDF += newPurchasedAmount;
-            console.log(`> [ASDF] Total New Accumulated: ${newPurchasedAmount}`);
-        }
-
-    } catch (e) {
-        console.error("> [ASDF] History Check Failed:", e.message);
-    }
+        if (newPurchasedAmount > 0) globalStats.totalASDF += newPurchasedAmount;
+    } catch (e) { console.error("> [ASDF] History Check Failed:", e.message); }
 }
 
 // --- 15m LOGIC ---
@@ -222,44 +189,109 @@ function getCurrentWindowStart() {
     return start.getTime();
 }
 
-// --- PAYOUT ENGINE (Remains unchanged) ---
-async function processPayouts(frameId, result, bets, totalVolume) {
-    if (!houseKeypair || totalVolume === 0) return;
-    const connection = new Connection(SOLANA_NETWORK, 'confirmed');
-
+// --- OPTIMIZED QUEUE MANAGER (IN-MEMORY PROCESSING) ---
+async function processPayoutQueue() {
+    // Lock execution so we don't run two processors at once
+    const release = await payoutMutex.acquire();
     try {
-        const balance = await connection.getBalance(houseKeypair.publicKey);
-        if ((balance / 1e9) < RESERVE_SOL) return console.error("> [PAYOUT] Reserve Low. Halting.");
+        if (!houseKeypair || !fsSync.existsSync(QUEUE_FILE)) return;
+        
+        // 1. Read Queue ONCE
+        let queueData = [];
+        try {
+            queueData = JSON.parse(await fs.readFile(QUEUE_FILE, 'utf8'));
+        } catch(e) { queueData = []; }
 
-        // FLAT MARKET
-        if (result === "FLAT") {
-            const burnLamports = Math.floor((totalVolume * 0.99) * 1e9);
-            if (burnLamports > 0) {
-                try {
-                    const burnTx = new Transaction().add(SystemProgram.transfer({ fromPubkey: houseKeypair.publicKey, toPubkey: FEE_WALLET, lamports: burnLamports }));
-                    await sendAndConfirmTransaction(connection, burnTx, [houseKeypair]);
-                    await stateMutex.runExclusive(async () => {
-                        globalStats.totalFees += (burnLamports / 1e9);
-                        await saveSystemState();
-                    });
-                } catch (e) {}
-            }
-            return;
-        }
+        if (!queueData || queueData.length === 0) return;
 
-        // NORMAL MARKET
-        const feeLamports = Math.floor((totalVolume * FEE_PERCENT) * 1e9);
-        if (feeLamports > 0) {
+        console.log(`> [QUEUE] Processing ${queueData.length} batches...`);
+        const connection = new Connection(SOLANA_NETWORK, 'confirmed');
+
+        // 2. Process loop (Memory Only)
+        let processedCount = 0;
+        const failedBatches = [];
+
+        // Iterate backwards or use while so we can remove items
+        // We use a while loop to shift from front
+        while (queueData.length > 0) {
+            const batch = queueData[0];
+            const { type, recipients, frameId } = batch;
+
             try {
-                const feeTx = new Transaction().add(SystemProgram.transfer({ fromPubkey: houseKeypair.publicKey, toPubkey: FEE_WALLET, lamports: feeLamports }));
-                await sendAndConfirmTransaction(connection, feeTx, [houseKeypair]);
-                await stateMutex.runExclusive(async () => {
-                    globalStats.totalFees += (feeLamports / 1e9);
-                    await saveSystemState();
-                });
-            } catch (e) {}
+                const tx = new Transaction();
+                let hasInstructions = false;
+
+                for (const item of recipients) {
+                    tx.add(SystemProgram.transfer({
+                        fromPubkey: houseKeypair.publicKey,
+                        toPubkey: new PublicKey(item.pubKey),
+                        lamports: item.amount
+                    }));
+                    hasInstructions = true;
+                }
+
+                if (hasInstructions) {
+                    // Send TX
+                    const sig = await sendAndConfirmTransaction(connection, tx, [houseKeypair], { commitment: 'confirmed' });
+                    console.log(`> [QUEUE] Batch Sent: ${sig}`);
+
+                    // Update User Logs (Async - don't block the payout loop)
+                    if (type === 'USER_PAYOUT') {
+                        // We spawn this off, we don't await it to keep payout queue moving fast
+                        recipients.forEach(async (item) => {
+                            try {
+                                const uData = await getUser(item.pubKey);
+                                if (uData.frameLog && uData.frameLog[frameId]) {
+                                    uData.frameLog[frameId].payoutTx = sig;
+                                    uData.frameLog[frameId].payoutAmount = item.amount / 1e9;
+                                    await saveUser(item.pubKey, uData);
+                                }
+                            } catch(e) {}
+                        });
+                    }
+                }
+            } catch (e) {
+                console.error(`> [QUEUE] Batch Failed: ${e.message}`);
+                // If failed, we keep it to try again later? Or discard to prevent blockage?
+                // For Scalability: Discard after failure to prevent one bad batch stopping everyone else.
+                // Ideally, move to a "dead letter queue" file.
+                failedBatches.push(batch); 
+            }
+
+            // Remove from memory queue
+            queueData.shift();
+            processedCount++;
+
+            // 3. Checkpoint to Disk every 5 batches to save I/O
+            if (processedCount % 5 === 0) {
+                await fs.writeFile(QUEUE_FILE, JSON.stringify(queueData));
+            }
         }
 
+        // Final Save (Clear file if empty)
+        await fs.writeFile(QUEUE_FILE, JSON.stringify(queueData));
+
+    } catch (e) { console.error("> [QUEUE] Manager Error:", e); }
+    finally { release(); }
+}
+
+// --- QUEUE BUILDER ---
+async function queuePayouts(frameId, result, bets, totalVolume) {
+    if (totalVolume === 0) return;
+    
+    const queue = []; 
+
+    // 1. Fee Batch
+    if (result === "FLAT") {
+        const burnLamports = Math.floor((totalVolume * 0.99) * 1e9);
+        if (burnLamports > 0) queue.push({ type: 'FEE', recipients: [{ pubKey: FEE_WALLET.toString(), amount: burnLamports }] });
+    } else {
+        const feeLamports = Math.floor((totalVolume * FEE_PERCENT) * 1e9);
+        if (feeLamports > 0) queue.push({ type: 'FEE', recipients: [{ pubKey: FEE_WALLET.toString(), amount: feeLamports }] });
+    }
+
+    // 2. User Batching (if not flat)
+    if (result !== "FLAT") {
         const potLamports = Math.floor((totalVolume * 0.94) * 1e9);
         const userPositions = {};
         bets.forEach(bet => {
@@ -268,8 +300,8 @@ async function processPayouts(frameId, result, bets, totalVolume) {
             else userPositions[bet.user].down += bet.shares;
         });
 
-        const eligibleWinners = [];
         let totalWinningShares = 0;
+        const eligibleWinners = [];
 
         for (const [pubKey, pos] of Object.entries(userPositions)) {
             let userDir = "FLAT";
@@ -286,61 +318,36 @@ async function processPayouts(frameId, result, bets, totalVolume) {
         if (totalWinningShares > 0) {
             const BATCH_SIZE = 15; 
             for (let i = 0; i < eligibleWinners.length; i += BATCH_SIZE) {
-                const batch = eligibleWinners.slice(i, i + BATCH_SIZE);
-                const tx = new Transaction();
-                let hasInstructions = false;
+                const batchWinners = eligibleWinners.slice(i, i + BATCH_SIZE);
+                const batchRecipients = [];
 
-                for (const winner of batch) {
+                for (const winner of batchWinners) {
                     const shareRatio = winner.sharesHeld / totalWinningShares;
                     const payoutLamports = Math.floor(potLamports * shareRatio);
-
-                    if (payoutLamports > 5000) { 
-                        tx.add(SystemProgram.transfer({
-                            fromPubkey: houseKeypair.publicKey,
-                            toPubkey: new PublicKey(winner.pubKey),
-                            lamports: payoutLamports
-                        }));
-                        hasInstructions = true;
+                    if (payoutLamports > 5000) {
+                        batchRecipients.push({ pubKey: winner.pubKey, amount: payoutLamports });
                     }
                 }
-
-                if (hasInstructions) {
-                    try {
-                        const sig = await sendAndConfirmTransaction(connection, tx, [houseKeypair], { commitment: 'confirmed' });
-                        batch.forEach(async (w) => {
-                            const uData = await getUser(w.pubKey);
-                            if (uData.frameLog && uData.frameLog[frameId]) {
-                                const shareRatio = w.sharesHeld / totalWinningShares;
-                                uData.frameLog[frameId].payoutTx = sig;
-                                uData.frameLog[frameId].payoutAmount = (potLamports * shareRatio) / 1e9;
-                                await saveUser(w.pubKey, uData);
-                            }
-                        });
-                    } catch (e) { console.error(`> [PAYOUT] Batch Failed: ${e.message}`); }
+                if (batchRecipients.length > 0) {
+                    queue.push({ type: 'USER_PAYOUT', frameId: frameId, recipients: batchRecipients });
                 }
             }
         }
+    }
 
-        // SWEEP EXCESS
-        try {
-            const postPayoutBalance = await connection.getBalance(houseKeypair.publicKey);
-            const reserveLamports = SWEEP_TARGET * 1e9; 
-            const txFeeBuffer = 5000;
-            const sweepLamports = postPayoutBalance - reserveLamports - txFeeBuffer;
+    // 3. Append new batches to existing queue file safely
+    let existingQueue = [];
+    try {
+        if (fsSync.existsSync(QUEUE_FILE)) {
+            existingQueue = JSON.parse(await fs.readFile(QUEUE_FILE, 'utf8'));
+        }
+    } catch(e) {}
 
-            if (sweepLamports > 0) {
-                const sweepTx = new Transaction().add(
-                    SystemProgram.transfer({
-                        fromPubkey: houseKeypair.publicKey,
-                        toPubkey: UPKEEP_WALLET,
-                        lamports: sweepLamports
-                    })
-                );
-                await sendAndConfirmTransaction(connection, sweepTx, [houseKeypair]);
-            }
-        } catch (e) {}
-
-    } catch (e) { console.error("> [PAYOUT] System Error:", e); }
+    const newQueue = existingQueue.concat(queue);
+    await fs.writeFile(QUEUE_FILE, JSON.stringify(newQueue));
+    
+    // 4. Trigger Processing (Background)
+    processPayoutQueue();
 }
 
 // --- FRAME CLOSING ---
@@ -350,7 +357,6 @@ async function closeFrame(closePrice, closeTime) {
         const frameId = gameState.candleStartTime; 
         console.log(`> [SYS] Closing Frame: ${frameId}`);
 
-        // --- UPDATE ASDF HISTORY ---
         await updateASDFPurchases();
 
         const openPrice = gameState.candleOpen;
@@ -413,13 +419,18 @@ async function closeFrame(closePrice, closeTime) {
             }));
         }
 
+        // [SCALABILITY] Flush RAM
+        processedSignatures.clear();
+        await fs.writeFile(SIGS_FILE, ''); // Truncate log
+
+        // Queue Payouts
+        await queuePayouts(frameId, result, betsSnapshot, frameSol);
+
         gameState.candleStartTime = closeTime;
         gameState.candleOpen = closePrice;
         gameState.poolShares = { up: 50, down: 50 }; 
         gameState.bets = []; 
-        await saveSystemState(); // Saves globalStats (ASDF) + New Frame
-
-        processPayouts(frameId, result, betsSnapshot, frameSol);
+        await saveSystemState();
         
     } finally { release(); }
 }
@@ -456,8 +467,9 @@ async function updatePrice() {
 
 setInterval(updatePrice, 10000); 
 updatePrice(); 
+processPayoutQueue(); // Resume queue on boot
 
-// --- ENDPOINTS (Remains unchanged) ---
+// --- ENDPOINTS ---
 app.get('/api/state', async (req, res) => {
     const release = await stateMutex.acquire();
     try {
@@ -588,5 +600,5 @@ app.post('/api/verify-bet', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-    console.log(`> ASDForecast Engine v37 (Transaction Parser) running on ${PORT}`);
+    console.log(`> ASDForecast Scalable Engine v46 running on ${PORT}`);
 });
