@@ -11,7 +11,7 @@ const app = express();
 const stateMutex = new Mutex();
 
 app.use(cors({
-    origin: 'https://www.alonisthe.dev',
+    origin: '*', // Allow all origins for the separate control panel page
     methods: ['GET', 'POST']
 }));
 
@@ -73,7 +73,7 @@ let gameState = {
     poolShares: { up: 50, down: 50 },
     bets: [],
     recentTrades: [],
-    sharePriceHistory: [] // Stores {t, up, down}
+    sharePriceHistory: [] 
 };
 let historySummary = [];
 let globalStats = { totalVolume: 0, totalFees: 0, totalASDF: 0, lastASDFSignature: null };
@@ -190,7 +190,6 @@ async function processPayoutQueue() {
         try { queueData = JSON.parse(await fs.readFile(QUEUE_FILE, 'utf8')); } catch(e) { queueData = []; }
         if (!queueData || queueData.length === 0) return;
 
-        console.log(`> [QUEUE] Processing ${queueData.length} batches...`);
         const connection = new Connection(SOLANA_NETWORK, 'confirmed');
         let processedCount = 0;
         
@@ -224,8 +223,6 @@ async function processPayoutQueue() {
 
                     if (hasInstructions) {
                         const sig = await sendAndConfirmTransaction(connection, tx, [houseKeypair], { commitment: 'confirmed' });
-                        console.log(`> [QUEUE] Batch Sent: ${sig}`);
-
                         if (type === 'USER_PAYOUT') {
                             for (const item of validRecipients) {
                                 const uData = await getUser(item.pubKey);
@@ -339,6 +336,7 @@ async function closeFrame(closePrice, closeTime) {
         await fs.writeFile(HISTORY_FILE, JSON.stringify(historySummary));
 
         const betsSnapshot = [...gameState.bets];
+
         const userPositions = {};
         betsSnapshot.forEach(bet => {
             if (!userPositions[bet.user]) userPositions[bet.user] = { up: 0, down: 0, sol: 0 };
@@ -374,9 +372,7 @@ async function closeFrame(closePrice, closeTime) {
         gameState.candleOpen = closePrice;
         gameState.poolShares = { up: 50, down: 50 }; 
         gameState.bets = []; 
-        // [FIX] Reset share price history on frame close
         gameState.sharePriceHistory = [];
-        
         await saveSystemState();
         
     } finally { release(); }
@@ -427,12 +423,6 @@ setInterval(updatePrice, 10000);
 updatePrice(); 
 processPayoutQueue();
 
-// --- HELPER ---
-function getPercentChange(current, old) {
-    if (!old || old === 0) return 0;
-    return ((current - old) / old) * 100;
-}
-
 // --- ENDPOINTS ---
 app.get('/api/state', async (req, res) => {
     const release = await stateMutex.acquire();
@@ -449,15 +439,18 @@ app.get('/api/state', async (req, res) => {
         const priceUp = (gameState.poolShares.up / totalShares) * PRICE_SCALE;
         const priceDown = (gameState.poolShares.down / totalShares) * PRICE_SCALE;
 
-        // [FIX] Calculate changes relative to Frame Start
         const nowTime = Date.now();
         const history = gameState.sharePriceHistory || [];
         
-        // Fallback to baseline of 0.05 (50/50 split) if history is empty or new
         const baseline = { up: 0.05, down: 0.05 };
         
         const oneMinAgo = history.find(x => x.t >= nowTime - 60000) || baseline;
         const fiveMinAgo = history.find(x => x.t >= nowTime - 300000) || baseline;
+
+        function getPercentChange(current, old) {
+            if (!old || old === 0) return 0;
+            return ((current - old) / old) * 100;
+        }
 
         const changes = {
             up1m: getPercentChange(priceUp, oneMinAgo.up),
@@ -465,6 +458,9 @@ app.get('/api/state', async (req, res) => {
             down1m: getPercentChange(priceDown, oneMinAgo.down),
             down5m: getPercentChange(priceDown, fiveMinAgo.down),
         };
+
+        // --- NEW: CALCULATE UNIQUE WALLETS ---
+        const uniqueUsers = new Set(gameState.bets.map(b => b.user)).size;
 
         const userKey = req.query.user;
         let myStats = null;
@@ -490,6 +486,8 @@ app.get('/api/state', async (req, res) => {
             change: percentChange,
             msUntilClose: msUntilClose,
             currentVolume: currentVolume,
+            // SEND UNIQUE WALLET COUNT
+            uniqueUsers: uniqueUsers,
             platformStats: globalStats,
             market: {
                 priceUp, priceDown,
@@ -508,6 +506,7 @@ app.get('/api/state', async (req, res) => {
 app.post('/api/verify-bet', async (req, res) => {
     const { signature, direction, userPubKey } = req.body;
     if (!signature || !userPubKey) return res.status(400).json({ error: "MISSING_DATA" });
+
     if (processedSignatures.has(signature)) return res.status(400).json({ error: "DUPLICATE_TX_DETECTED" });
 
     let solAmount = 0;
@@ -574,5 +573,5 @@ app.post('/api/verify-bet', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-    console.log(`> ASDForecast Engine v51 running on ${PORT}`);
+    console.log(`> ASDForecast Engine v52 running on ${PORT}`);
 });
