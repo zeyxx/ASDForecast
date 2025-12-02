@@ -16,7 +16,7 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 const SOLANA_NETWORK = 'https://api.devnet.solana.com';
-// --- UPDATED VAULT ADDRESS ---
+// --- VAULT ADDRESS ---
 const HOUSE_ADDRESS = "BXSp5y6Ua6tB5fZDe1EscVaaEaZLg1yqzrsPqAXhKJYy";
 const COINGECKO_API_KEY = "CG-KsYLbF8hxVytbPTNyLXe7vWA";
 const PRICE_SCALE = 0.1;
@@ -30,7 +30,6 @@ const HISTORY_FILE = path.join(DATA_DIR, 'history.json');
 const USERS_FILE = path.join(DATA_DIR, 'users.json');     
 
 console.log(`> [SYS] Persistence Layer Active. Saving data to: ${DATA_DIR}`);
-console.log(`> [SYS] Vault Address Configured: ${HOUSE_ADDRESS}`);
 
 // --- STATE MANAGEMENT ---
 let gameState = {
@@ -50,7 +49,7 @@ function loadData() {
         if (fs.existsSync(STORAGE_FILE)) gameState = { ...gameState, ...JSON.parse(fs.readFileSync(STORAGE_FILE)) };
         if (fs.existsSync(HISTORY_FILE)) frameHistory = JSON.parse(fs.readFileSync(HISTORY_FILE));
         if (fs.existsSync(USERS_FILE)) userStats = JSON.parse(fs.readFileSync(USERS_FILE));
-        console.log(`> [SYS] Data Loaded. Active Bets: ${gameState.bets.length}. Users: ${Object.keys(userStats).length}`);
+        console.log(`> [SYS] Data Loaded. Active Bets: ${gameState.bets.length}. History Depth: ${frameHistory.length}`);
     } catch (e) { console.error("Load Error", e); }
 }
 
@@ -98,8 +97,9 @@ function closeFrame(closePrice, closeTime) {
         totalSol: frameSol
     };
     
+    // Add to history (UNLIMITED STORAGE as requested)
     frameHistory.unshift(frameRecord); 
-    if (frameHistory.length > 100) frameHistory.pop();
+    // Removed logic that limits array length.
 
     // Determine Winners/Losers Logic
     const frameUserPositions = {}; 
@@ -182,8 +182,20 @@ app.get('/api/state', (req, res) => {
 
     const userKey = req.query.user;
     let myStats = null;
-    if (userKey && userStats[userKey]) {
-        myStats = userStats[userKey];
+    let activePosition = null;
+
+    if (userKey) {
+        if (userStats[userKey]) {
+            myStats = userStats[userKey];
+        }
+        
+        // --- CALCULATE ACTIVE POSITION FOR CURRENT FRAME ---
+        const userBets = gameState.bets.filter(b => b.user === userKey);
+        activePosition = {
+            upShares: userBets.filter(b => b.direction === 'UP').reduce((a, b) => a + b.shares, 0),
+            downShares: userBets.filter(b => b.direction === 'DOWN').reduce((a, b) => a + b.shares, 0),
+            wageredSol: userBets.reduce((a, b) => a + b.costSol, 0)
+        };
     }
 
     res.json({
@@ -196,8 +208,9 @@ app.get('/api/state', (req, res) => {
             sharesUp: gameState.poolShares.up,
             sharesDown: gameState.poolShares.down
         },
-        history: frameHistory.slice(0, 3), 
-        userStats: myStats
+        history: frameHistory, 
+        userStats: myStats,
+        activePosition: activePosition // Send current bet info
     });
 });
 
@@ -238,11 +251,11 @@ app.post('/api/verify-bet', async (req, res) => {
         if (direction === 'UP') gameState.poolShares.up += sharesReceived;
         else gameState.poolShares.down += sharesReceived;
 
-        // --- UPDATE USER STATS IMMEDIATELY ---
+        // UPDATE USER STATS
         if (!userStats[userPubKey]) {
             userStats[userPubKey] = { wins: 0, losses: 0, totalSol: 0, framesPlayed: 0 };
         }
-        userStats[userPubKey].totalSol += solAmount; // Instant update
+        userStats[userPubKey].totalSol += solAmount; 
 
         gameState.bets.push({
             signature, user: userPubKey, direction,
@@ -250,7 +263,6 @@ app.post('/api/verify-bet', async (req, res) => {
             timestamp: Date.now()
         });
 
-        // --- PERSIST ALL DATA IMMEDIATELY ---
         saveData();
         
         console.log(`> TRADE: ${userPubKey} | ${direction} | ${sharesReceived.toFixed(2)} Shares`);
@@ -263,5 +275,5 @@ app.post('/api/verify-bet', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-    console.log(`> ASDForecast Engine v4 (Vault Connected) running on ${PORT}`);
+    console.log(`> ASDForecast Engine v5.1 (Active Stats) running on ${PORT}`);
 });
