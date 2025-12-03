@@ -20,17 +20,18 @@ const PORT = process.env.PORT || 3000;
 const SOLANA_NETWORK = `https://mainnet.helius-rpc.com/?api-key=${process.env.HELIUS_API_KEY}`;
 const FEE_WALLET = new PublicKey("5xfyqaDzaj1XNvyz3gnuRJMSNUzGkkMbYbh2bKzWxuan");
 const UPKEEP_WALLET = new PublicKey("BH8aAiEDgZGJo6pjh32d5b6KyrNt6zA9U8WTLZShmVXq");
+// Pyth Mainnet SOL/USD Price Feed
+const PYTH_SOL_USD = new PublicKey("H6ARHf6YXhGYeQfUzQNGk6rDNnLBQKrenN712K4AQJEG");
 
 // --- CONFIG ---
 const ASDF_MINT = "9zB5wRarXMj86MymwLumSKA1Dx35zPqqKfcZtK1Spump";
-const COINGECKO_API_KEY = "CG-KsYLbF8hxVytbPTNyLXe7vWA";
 const PRICE_SCALE = 0.1;
 const PAYOUT_MULTIPLIER = 0.94;
 const FEE_PERCENT = 0.0552; 
 const RESERVE_SOL = 0.02;
 const SWEEP_TARGET = 0.05;
 const FRAME_DURATION = 15 * 60 * 1000; 
-const BACKEND_VERSION = "102.0"; // Async I/O Optimization
+const BACKEND_VERSION = "103.0"; // Helius/Pyth Oracle
 
 // [OPTIMIZATION] Priority Fee
 const PRIORITY_FEE_UNITS = 50000; 
@@ -134,9 +135,7 @@ async function saveSystemState() {
         isPaused: gameState.isPaused,
         isResetting: gameState.isResetting
     });
-    
     await atomicWrite(STATS_FILE, globalStats);
-
     if (gameState.candleStartTime > 0) {
         const frameFile = path.join(FRAMES_DIR, `frame_${gameState.candleStartTime}.json`);
         await atomicWrite(frameFile, {
@@ -200,7 +199,7 @@ function getCurrentWindowStart() {
     return start.getTime();
 }
 
-// --- QUEUE ---
+// --- QUEUE PROCESSOR ---
 async function processPayoutQueue() {
     const release = await payoutMutex.acquire();
     try {
@@ -220,7 +219,6 @@ async function processPayoutQueue() {
                 const tx = new Transaction();
                 const priorityFeeIx = ComputeBudgetProgram.setComputeUnitPrice({ microLamports: PRIORITY_FEE_UNITS });
                 tx.add(priorityFeeIx);
-
                 let hasInstructions = false;
                 const validRecipients = [];
                 
@@ -247,11 +245,9 @@ async function processPayoutQueue() {
                         }));
                         hasInstructions = true;
                     }
-
                     if (hasInstructions) {
                         const sig = await sendAndConfirmTransaction(connection, tx, [houseKeypair], { commitment: 'confirmed', maxRetries: 5 });
                         console.log(`> [QUEUE] Batch Sent: ${sig}`);
-
                         if (type === 'USER_PAYOUT') {
                             for (const item of validRecipients) {
                                 const uData = await getUser(item.pubKey);
@@ -282,7 +278,6 @@ async function processPayoutQueue() {
     finally { release(); }
 }
 
-// --- BACKGROUND TASKS (UNLOCKED) ---
 async function queuePayouts(frameId, result, bets, totalVolume) {
     if (totalVolume === 0) return;
     const queue = []; 
@@ -310,7 +305,6 @@ async function queuePayouts(frameId, result, bets, totalVolume) {
         for (const [pubKey, pos] of Object.entries(userPositions)) {
             const rUp = Math.round(pos.up * 10000) / 10000;
             const rDown = Math.round(pos.down * 10000) / 10000;
-            
             let userDir = "FLAT";
             if (rUp > rDown) userDir = "UP";
             else if (rDown > rUp) userDir = "DOWN";
@@ -345,45 +339,6 @@ async function queuePayouts(frameId, result, bets, totalVolume) {
     processPayoutQueue();
 }
 
-async function updateUserStatsBackground(frameId, result, bets) {
-    const userPositions = {};
-    bets.forEach(bet => {
-        if (!userPositions[bet.user]) userPositions[bet.user] = { up: 0, down: 0, sol: 0 };
-        if (bet.direction === 'UP') userPositions[bet.user].up += bet.shares;
-        else userPositions[bet.user].down += bet.shares;
-        userPositions[bet.user].sol += bet.costSol;
-    });
-
-    const usersToUpdate = Object.entries(userPositions);
-    const USER_IO_BATCH_SIZE = 20; 
-    
-    // Process in batches asynchronously
-    for (let i = 0; i < usersToUpdate.length; i += USER_IO_BATCH_SIZE) {
-        const batch = usersToUpdate.slice(i, i + USER_IO_BATCH_SIZE);
-        await Promise.all(batch.map(async ([pubKey, pos]) => {
-            const userData = await getUser(pubKey);
-            userData.framesPlayed += 1;
-            
-            const rUp = Math.round(pos.up * 10000) / 10000;
-            const rDown = Math.round(pos.down * 10000) / 10000;
-
-            let userDir = "FLAT";
-            if (rUp > rDown) userDir = "UP";
-            else if (rDown > rUp) userDir = "DOWN";
-            else userDir = "FLAT";
-
-            const outcome = (userDir !== "FLAT" && result !== "FLAT" && userDir === result) ? "WIN" : "LOSS";
-            if (outcome === "WIN") userData.wins += 1; else if (outcome === "LOSS") userData.losses += 1;
-            if (!userData.frameLog) userData.frameLog = {};
-            userData.frameLog[frameId] = { 
-                dir: userDir, result: outcome, time: Date.now(),
-                upShares: pos.up, downShares: pos.down, wagered: pos.sol
-            };
-            await saveUser(pubKey, userData);
-        }));
-    }
-}
-
 async function processRefunds(frameId, bets) {
     if (!houseKeypair || bets.length === 0) return;
     const refunds = {};
@@ -409,40 +364,45 @@ async function processRefunds(frameId, bets) {
     processPayoutQueue();
 }
 
-// --- OPTIMIZED CLOSE FRAME ---
 async function closeFrame(closePrice, closeTime) {
     const release = await stateMutex.acquire(); 
-    let betsSnapshot = [];
-    let frameId = 0;
-    let result = "FLAT";
-    let frameSol = 0;
-    
     try {
-        frameId = gameState.candleStartTime; 
+        const frameId = gameState.candleStartTime; 
         console.log(`> [SYS] Closing Frame: ${frameId}`);
 
         await updateASDFPurchases();
 
         const openPrice = gameState.candleOpen;
+        let result = "FLAT";
         if (closePrice > openPrice) result = "UP";
         else if (closePrice < openPrice) result = "DOWN";
 
         const realSharesUp = Math.max(0, gameState.poolShares.up - 50);
         const realSharesDown = Math.max(0, gameState.poolShares.down - 50);
-        frameSol = gameState.bets.reduce((acc, bet) => acc + bet.costSol, 0);
-        
-        // Fee Tracking
+        const frameSol = gameState.bets.reduce((acc, bet) => acc + bet.costSol, 0);
+
         let frameFees = (result === "FLAT") ? frameSol * 0.99 : frameSol * FEE_PERCENT;
         globalStats.totalFees += frameFees;
 
-        // Winner Logic (Simplified for History)
         let winnerCount = 0;
         let payoutTotal = 0;
         if (result !== "FLAT") {
             const potSol = frameSol * 0.94;
-            payoutTotal = potSol;
-            // Approximate count (exact done in background)
-            winnerCount = gameState.bets.length / 2; 
+            const userPositions = {};
+            gameState.bets.forEach(bet => {
+                if (!userPositions[bet.user]) userPositions[bet.user] = { up: 0, down: 0 };
+                if (bet.direction === 'UP') userPositions[bet.user].up += bet.shares;
+                else userPositions[bet.user].down += bet.shares;
+            });
+            for (const [pk, pos] of Object.entries(userPositions)) {
+                const rUp = Math.round(pos.up * 10000) / 10000;
+                const rDown = Math.round(pos.down * 10000) / 10000;
+                let dir = "FLAT";
+                if (rUp > rDown) dir = "UP";
+                else if (rDown > rUp) dir = "DOWN";
+                if (dir === result) winnerCount++;
+            }
+            if (winnerCount > 0) payoutTotal = potSol;
         }
 
         const frameRecord = {
@@ -452,48 +412,84 @@ async function closeFrame(closePrice, closeTime) {
             totalSol: frameSol, winners: winnerCount, payout: payoutTotal
         };
         
-        // 1. Critical Archives (Inside Lock)
         historySummary.unshift(frameRecord);
         if (historySummary.length > 100) historySummary = historySummary.slice(0, 100);
         await atomicWrite(HISTORY_FILE, historySummary);
 
-        // 2. Snapshot for Background
-        betsSnapshot = [...gameState.bets];
+        const betsSnapshot = [...gameState.bets];
+        const userPositions = {};
+        betsSnapshot.forEach(bet => {
+            if (!userPositions[bet.user]) userPositions[bet.user] = { up: 0, down: 0, sol: 0 };
+            if (bet.direction === 'UP') userPositions[bet.user].up += bet.shares;
+            else userPositions[bet.user].down += bet.shares;
+            userPositions[bet.user].sol += bet.costSol;
+        });
 
-        // 3. Reset State
+        // LOG WINNERS for Debug
+        const frameParticipants = [];
+        const usersToUpdate = Object.entries(userPositions);
+        const USER_IO_BATCH_SIZE = 20; 
+        for (let i = 0; i < usersToUpdate.length; i += USER_IO_BATCH_SIZE) {
+            const batch = usersToUpdate.slice(i, i + USER_IO_BATCH_SIZE);
+            await Promise.all(batch.map(async ([pubKey, pos]) => {
+                const userData = await getUser(pubKey);
+                userData.framesPlayed += 1;
+                
+                const rUp = Math.round(pos.up * 10000) / 10000;
+                const rDown = Math.round(pos.down * 10000) / 10000;
+                let userDir = "FLAT";
+                if (rUp > rDown) userDir = "UP";
+                else if (rDown > rUp) userDir = "DOWN";
+
+                frameParticipants.push({ 
+                    key: pubKey.slice(0, 6), shares: Math.max(rUp, rDown), sol: pos.sol, dir: userDir 
+                });
+
+                const outcome = (userDir !== "FLAT" && result !== "FLAT" && userDir === result) ? "WIN" : "LOSS";
+                if (outcome === "WIN") userData.wins += 1; else if (outcome === "LOSS") userData.losses += 1;
+                if (!userData.frameLog) userData.frameLog = {};
+                userData.frameLog[frameId] = { 
+                    dir: userDir, result: outcome, time: Date.now(),
+                    upShares: pos.up, downShares: pos.down, wagered: pos.sol
+                };
+                await saveUser(pubKey, userData);
+            }));
+        }
+
+        frameParticipants.sort((a, b) => b.shares - a.shares);
+        console.log(`> [DEBUG] Frame ${frameId} Results (Top 2):`);
+        if (frameParticipants[0]) console.log(`> 1st: ${frameParticipants[0].key} | ${frameParticipants[0].dir}`);
+        if (frameParticipants[1]) console.log(`> 2nd: ${frameParticipants[1].key} | ${frameParticipants[1].dir}`);
+
         processedSignatures.clear();
         await fs.writeFile(SIGS_FILE, '');
+
+        await queuePayouts(frameId, result, betsSnapshot, frameSol);
+
         gameState.candleStartTime = closeTime;
         gameState.candleOpen = closePrice;
         gameState.poolShares = { up: 50, down: 50 }; 
         gameState.bets = []; 
         gameState.sharePriceHistory = [];
         gameState.isResetting = false; 
-        
-        // 4. Save New State
         await saveSystemState();
         
-    } finally { 
-        release(); // --- UNLOCK MARKET ---
-    }
-
-    // 5. Background Processing (Unlocked)
-    // Update Users
-    updateUserStatsBackground(frameId, result, betsSnapshot);
-    // Queue Payouts
-    queuePayouts(frameId, result, betsSnapshot, frameSol);
+    } finally { release(); }
 }
 
 async function updatePrice() {
     try {
-        const response = await axios.get('https://api.coingecko.com/api/v3/simple/price', {
-            params: { ids: 'solana', vs_currencies: 'usd', x_cg_demo_api_key: COINGECKO_API_KEY },
-            timeout: 5000
-        });
+        // ORACLE SWITCH: USE HELIUS VIA PYTH
+        const connection = new Connection(SOLANA_NETWORK);
+        const pythInfo = await connection.getAccountInfo(PYTH_SOL_USD);
         
-        if (response.data.solana) {
-            const currentPrice = response.data.solana.usd;
-            
+        if (pythInfo && pythInfo.data) {
+            // PARSE PYTH DATA
+            // offset 208 = price (int64), offset 20 = expo (int32)
+            const priceRaw = pythInfo.data.readBigInt64LE(208);
+            const expo = pythInfo.data.readInt32LE(20);
+            const currentPrice = Number(priceRaw) * (10 ** expo);
+
             await stateMutex.runExclusive(async () => {
                 gameState.price = currentPrice;
                 const currentWindowStart = getCurrentWindowStart();
@@ -533,7 +529,6 @@ async function updatePrice() {
                     } else {
                         gameState.isResetting = true; 
                         await saveSystemState();
-                        // Run closeFrame without await to prevent blocking
                         closeFrame(currentPrice, currentWindowStart);
                     }
                 }
@@ -548,7 +543,7 @@ async function updatePrice() {
                 await saveSystemState();
             });
         }
-    } catch (e) { console.log("Oracle unstable"); }
+    } catch (e) { console.log("Oracle error:", e.message); }
 }
 
 setInterval(updatePrice, 10000); 
@@ -556,18 +551,15 @@ updatePrice();
 processPayoutQueue();
 
 app.get('/api/state', async (req, res) => {
-    // LOCK-FREE READ
     const now = new Date();
     const nextWindowStart = getCurrentWindowStart() + FRAME_DURATION;
     const msUntilClose = nextWindowStart - now.getTime();
     const priceChange = gameState.price - gameState.candleOpen;
     const percentChange = gameState.candleOpen ? (priceChange / gameState.candleOpen) * 100 : 0;
     const currentVolume = gameState.bets.reduce((acc, b) => acc + b.costSol, 0);
-
     const totalShares = gameState.poolShares.up + gameState.poolShares.down;
     const priceUp = (gameState.poolShares.up / totalShares) * PRICE_SCALE;
     const priceDown = (gameState.poolShares.down / totalShares) * PRICE_SCALE;
-
     const nowTime = Date.now();
     const history = gameState.sharePriceHistory || [];
     const baseline = { up: 0.05, down: 0.05 };
@@ -581,6 +573,7 @@ app.get('/api/state', async (req, res) => {
         down5m: getPercentChange(priceDown, fiveMinAgo.down),
     };
     const uniqueUsers = new Set(gameState.bets.map(b => b.user)).size;
+    
     const userKey = req.query.user;
     let myStats = null;
     let activePosition = null;
