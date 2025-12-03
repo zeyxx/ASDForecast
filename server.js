@@ -34,7 +34,7 @@ const FEE_PERCENT = 0.0552;
 const RESERVE_SOL = 0.02;
 const SWEEP_TARGET = 0.05;
 const FRAME_DURATION = 15 * 60 * 1000; 
-const BACKEND_VERSION = "108.0"; // Leaderboard Added
+const BACKEND_VERSION = "109.0"; // Added Pause Toggle
 
 const PRIORITY_FEE_UNITS = 50000; 
 
@@ -96,7 +96,7 @@ let gameState = {
 let historySummary = [];
 let globalStats = { totalVolume: 0, totalFees: 0, totalASDF: 0, lastASDFSignature: null };
 let processedSignatures = new Set(); 
-let globalLeaderboard = []; // New State Variable
+let globalLeaderboard = [];
 
 function loadGlobalState() {
     try {
@@ -195,7 +195,7 @@ async function updateASDFPurchases() {
     } catch (e) { console.error("> [ASDF] History Check Failed:", e.message); }
 }
 
-// --- LEADERBOARD GENERATOR ---
+// --- LEADERBOARD ---
 async function updateLeaderboard() {
     try {
         const files = await fs.readdir(USERS_DIR);
@@ -219,7 +219,7 @@ async function updateLeaderboard() {
                      leaders.push({
                         pubKey: file.replace('user_', '').replace('.json', ''),
                         wins: data.wins,
-                        bets: totalGames, // Total Bets
+                        bets: totalGames, 
                         winRate: (data.wins / totalGames) * 100,
                         totalWon: totalWon
                     });
@@ -227,15 +227,14 @@ async function updateLeaderboard() {
             } catch(e) {}
         }
         
-        // Sort by Total SOL Won descending
         leaders.sort((a, b) => b.totalWon - a.totalWon);
-        globalLeaderboard = leaders.slice(0, 5); // Top 5
+        globalLeaderboard = leaders.slice(0, 5); 
         
     } catch (e) { console.error("Leaderboard Error:", e.message); }
 }
 
-setInterval(updateLeaderboard, 60000); // Run every minute
-updateLeaderboard(); // Run on startup
+setInterval(updateLeaderboard, 60000); 
+updateLeaderboard(); 
 
 function getCurrentWindowStart() {
     const now = new Date();
@@ -522,6 +521,7 @@ async function updatePrice() {
     let fetchedPrice = 0;
     let priceFound = false;
 
+    // 1. PYTH HERMES
     try {
         const response = await axios.get(`${PYTH_HERMES_URL}?ids[]=${SOL_FEED_ID}`, { timeout: 2000 });
         if (response.data && response.data.parsed && response.data.parsed[0]) {
@@ -531,6 +531,7 @@ async function updatePrice() {
         }
     } catch (e) { console.log(`Pyth Failed: ${e.message}`); }
 
+    // 2. FALLBACK COINGECKO
     if (!priceFound) {
         try {
             const response = await axios.get('https://api.coingecko.com/api/v3/simple/price', {
@@ -548,8 +549,8 @@ async function updatePrice() {
         await stateMutex.runExclusive(async () => {
             gameState.price = fetchedPrice;
             gameState.lastPriceTimestamp = Date.now();
-            
             const currentWindowStart = getCurrentWindowStart();
+
             if (gameState.isResetting) return;
             
             if (gameState.isPaused) {
@@ -628,7 +629,6 @@ app.get('/api/state', async (req, res) => {
         down5m: getPercentChange(priceDown, fiveMinAgo.down),
     };
     const uniqueUsers = new Set(gameState.bets.map(b => b.user)).size;
-    
     const userKey = req.query.user;
     let myStats = null;
     let activePosition = null;
@@ -650,13 +650,14 @@ app.get('/api/state', async (req, res) => {
         market: { priceUp, priceDown, sharesUp: gameState.poolShares.up, sharesDown: gameState.poolShares.down, changes: changes },
         history: historySummary, recentTrades: gameState.recentTrades, userStats: myStats, activePosition: activePosition,
         backendVersion: BACKEND_VERSION,
-        leaderboard: globalLeaderboard, // Added Leaderboard
+        leaderboard: globalLeaderboard,
         lastPriceTimestamp: gameState.lastPriceTimestamp
     });
 });
 
 app.post('/api/verify-bet', async (req, res) => {
     if (gameState.isPaused) return res.status(400).json({ error: "MARKET_PAUSED" });
+    if (gameState.isResetting) return res.status(503).json({ error: "CALCULATING_RESULTS" });
     const { signature, direction, userPubKey } = req.body;
     if (!signature || !userPubKey) return res.status(400).json({ error: "MISSING_DATA" });
     if (processedSignatures.has(signature)) return res.status(400).json({ error: "DUPLICATE_TX_DETECTED" });
@@ -686,6 +687,7 @@ app.post('/api/verify-bet', async (req, res) => {
         if (processedSignatures.has(signature)) return res.status(400).json({ error: "DUPLICATE_TX_DETECTED" });
         if (txBlockTime < gameState.candleStartTime) return res.status(400).json({ error: "TX_TIMESTAMP_EXPIRED" });
         if (gameState.isPaused) return res.status(400).json({ error: "MARKET_PAUSED" });
+        if (gameState.isResetting) return res.status(503).json({ error: "CALCULATING_RESULTS" });
 
         const totalShares = gameState.poolShares.up + gameState.poolShares.down;
         let price = 0.05; 
@@ -714,6 +716,22 @@ app.post('/api/verify-bet', async (req, res) => {
         res.json({ success: true, shares: sharesReceived, price: price });
 
     } catch (e) { console.error(e); res.status(500).json({ error: "STATE_ERROR" }); } finally { release(); }
+});
+
+// --- NEW ADMIN TOGGLE ENDPOINT ---
+app.post('/api/admin/toggle-pause', async (req, res) => {
+    const auth = req.headers['x-admin-secret'];
+    if (!auth || auth !== process.env.ADMIN_ACTION_PASSWORD) return res.status(403).json({ error: "UNAUTHORIZED" });
+
+    const release = await stateMutex.acquire();
+    try {
+        gameState.isPaused = !gameState.isPaused;
+        await saveSystemState();
+        
+        console.log(`> [ADMIN] Market Paused State toggled to: ${gameState.isPaused}`);
+        res.json({ success: true, isPaused: gameState.isPaused });
+    } catch (e) { console.error(e); res.status(500).json({ error: "ADMIN_ERROR" }); } 
+    finally { release(); }
 });
 
 app.post('/api/admin/cancel-frame', async (req, res) => {
