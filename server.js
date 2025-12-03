@@ -29,7 +29,7 @@ const FEE_PERCENT = 0.0552;
 const RESERVE_SOL = 0.02;
 const SWEEP_TARGET = 0.05;
 const FRAME_DURATION = 15 * 60 * 1000; 
-const BACKEND_VERSION = "104.0"; // Jupiter Oracle
+const BACKEND_VERSION = "105.0"; // Helius DAS getAsset Oracle
 
 // [OPTIMIZATION] Priority Fee
 const PRIORITY_FEE_UNITS = 50000; 
@@ -110,7 +110,7 @@ function loadGlobalState() {
         if (fsSync.existsSync(STATE_FILE)) {
             const savedState = JSON.parse(fsSync.readFileSync(STATE_FILE));
             gameState = { ...gameState, ...savedState };
-            gameState.isResetting = false; 
+            gameState.isResetting = false; // Reset lock on boot
             
             if (gameState.candleStartTime > 0) {
                 const currentFrameFile = path.join(FRAMES_DIR, `frame_${gameState.candleStartTime}.json`);
@@ -133,9 +133,7 @@ async function saveSystemState() {
         isPaused: gameState.isPaused,
         isResetting: gameState.isResetting
     });
-    
     await atomicWrite(STATS_FILE, globalStats);
-
     if (gameState.candleStartTime > 0) {
         const frameFile = path.join(FRAMES_DIR, `frame_${gameState.candleStartTime}.json`);
         await atomicWrite(frameFile, {
@@ -199,7 +197,7 @@ function getCurrentWindowStart() {
     return start.getTime();
 }
 
-// --- QUEUE PROCESSOR ---
+// --- QUEUE & PAYOUTS ---
 async function processPayoutQueue() {
     const release = await payoutMutex.acquire();
     try {
@@ -219,7 +217,6 @@ async function processPayoutQueue() {
                 const tx = new Transaction();
                 const priorityFeeIx = ComputeBudgetProgram.setComputeUnitPrice({ microLamports: PRIORITY_FEE_UNITS });
                 tx.add(priorityFeeIx);
-
                 let hasInstructions = false;
                 const validRecipients = [];
                 
@@ -312,7 +309,7 @@ async function queuePayouts(frameId, result, bets, totalVolume) {
             let userDir = "FLAT";
             if (rUp > rDown) userDir = "UP";
             else if (rDown > rUp) userDir = "DOWN";
-            if (pos.up === pos.down) userDir = "FLAT"; 
+            if (rUp === rDown) userDir = "FLAT"; 
 
             if (userDir === result) {
                 const sharesHeld = result === "UP" ? pos.up : pos.down;
@@ -440,7 +437,6 @@ async function closeFrame(closePrice, closeTime) {
                 
                 const rUp = Math.round(pos.up * 10000) / 10000;
                 const rDown = Math.round(pos.down * 10000) / 10000;
-
                 let userDir = "FLAT";
                 if (rUp > rDown) userDir = "UP";
                 else if (rDown > rUp) userDir = "DOWN";
@@ -456,21 +452,6 @@ async function closeFrame(closePrice, closeTime) {
                 await saveUser(pubKey, userData);
             }));
         }
-
-        // LOG TOP 2
-        const frameParticipants = [];
-        for (const [pubKey, pos] of Object.entries(userPositions)) {
-             const rUp = Math.round(pos.up);
-             const rDown = Math.round(pos.down);
-             let dir = rUp > rDown ? 'UP' : (rDown > rUp ? 'DOWN' : 'FLAT');
-             frameParticipants.push({ 
-                key: pubKey.slice(0, 6), shares: Math.max(rUp, rDown), sol: pos.sol, dir: dir 
-            });
-        }
-        frameParticipants.sort((a, b) => b.shares - a.shares);
-        console.log(`> [DEBUG] Frame ${frameId} Results:`);
-        if (frameParticipants[0]) console.log(`> 1st: ${frameParticipants[0].key} | ${frameParticipants[0].dir}`);
-        if (frameParticipants[1]) console.log(`> 2nd: ${frameParticipants[1].key} | ${frameParticipants[1].dir}`);
 
         processedSignatures.clear();
         await fs.writeFile(SIGS_FILE, '');
@@ -490,20 +471,28 @@ async function closeFrame(closePrice, closeTime) {
 
 async function updatePrice() {
     try {
-        // ORACLE SWITCH: JUPITER API V2
-        const response = await axios.get('https://api.jup.ag/price/v2?ids=So11111111111111111111111111111111111111112', {
-            timeout: 5000
-        });
+        // --- HELIUS DAS GETASSET ---
+        const response = await axios.post(SOLANA_NETWORK, {
+            jsonrpc: '2.0',
+            id: 'price-check',
+            method: 'getAsset',
+            params: {
+                id: 'So11111111111111111111111111111111111111112' // Wrapped SOL Mint
+            }
+        }, { timeout: 5000 });
+
+        const asset = response.data.result;
         
-        if (response.data && response.data.data && response.data.data['So11111111111111111111111111111111111111112']) {
-            const currentPrice = parseFloat(response.data.data['So11111111111111111111111111111111111111112'].price);
+        // EXTRACT PRICE FROM DAS
+        if (asset && asset.token_info && asset.token_info.price_info) {
+            const currentPrice = asset.token_info.price_info.price_per_token;
             
             await stateMutex.runExclusive(async () => {
                 gameState.price = currentPrice;
                 const currentWindowStart = getCurrentWindowStart();
-
-                if (gameState.isResetting) return;
                 
+                if (gameState.isResetting) return;
+
                 if (gameState.isPaused) {
                     if (currentWindowStart > gameState.candleStartTime) {
                         console.log("> [SYS] Unpausing for new Frame.");
@@ -558,6 +547,7 @@ setInterval(updatePrice, 10000);
 updatePrice(); 
 processPayoutQueue();
 
+// --- ENDPOINTS ---
 app.get('/api/state', async (req, res) => {
     const now = new Date();
     const nextWindowStart = getCurrentWindowStart() + FRAME_DURATION;
@@ -565,11 +555,9 @@ app.get('/api/state', async (req, res) => {
     const priceChange = gameState.price - gameState.candleOpen;
     const percentChange = gameState.candleOpen ? (priceChange / gameState.candleOpen) * 100 : 0;
     const currentVolume = gameState.bets.reduce((acc, b) => acc + b.costSol, 0);
-
     const totalShares = gameState.poolShares.up + gameState.poolShares.down;
     const priceUp = (gameState.poolShares.up / totalShares) * PRICE_SCALE;
     const priceDown = (gameState.poolShares.down / totalShares) * PRICE_SCALE;
-
     const nowTime = Date.now();
     const history = gameState.sharePriceHistory || [];
     const baseline = { up: 0.05, down: 0.05 };
@@ -583,7 +571,6 @@ app.get('/api/state', async (req, res) => {
         down5m: getPercentChange(priceDown, fiveMinAgo.down),
     };
     const uniqueUsers = new Set(gameState.bets.map(b => b.user)).size;
-    
     const userKey = req.query.user;
     let myStats = null;
     let activePosition = null;
