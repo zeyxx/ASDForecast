@@ -1,4 +1,4 @@
-<!-- ASDForecast v103.2 // MASTER MERGE: SHARE, CONTENT, RPC, STABILITY -->
+<!-- ASDForecast v104.0 // MASTER MERGE: SHARE, CONTENT, RPC, STABILITY -->
 
 <!-- Dependencies -->
 <script src="https://cdn.tailwindcss.com"></script>
@@ -135,8 +135,6 @@
                 <!-- HISTORY -->
                 <div class="panel p-6 bg-black/40">
                     <div class="flex justify-between items-center mb-4"><h3 class="text-lg font-bold text-white">Previous Frames</h3><span id="history-count" class="text-xs text-orange-500 font-mono"></span></div>
-                    
-                    <!-- SCROLLABLE CONTAINER -->
                     <div id="history-container" class="history-collapsed">
                         <table class="w-full text-sm font-mono text-left">
                             <thead class="text-orange-500 border-b border-orange-900/50 sticky top-0 bg-[#1d120e] z-10"><tr><th class="pb-2">Time</th><th class="pb-2">Result</th><th class="pb-2">Open</th><th class="pb-2">Close</th><th class="pb-2">Volume</th><th class="pb-2">Your Status</th></tr></thead>
@@ -169,9 +167,8 @@
                             <div class="bg-orange-900/20 p-2 rounded border border-orange-500/30 text-xs font-mono">
                                 <span class="text-orange-400 block mb-1 uppercase tracking-wider">Current Frame Position</span>
                                 <div class="flex justify-between mb-1">
-                                    <!-- FIXED FORMAT -->
-                                    <span class="text-green-400">UP: <span id="stat-active-up">0 <span class="text-gray-500">(0.00 SOL)</span></span></span>
-                                    <span class="text-red-400">DOWN: <span id="stat-active-down">0 <span class="text-gray-500">(0.00 SOL)</span></span></span>
+                                    <span class="text-green-400">UP: <span id="stat-active-up">0</span> <span id="stat-active-up-sol" class="text-gray-500">(0.00 SOL)</span></span>
+                                    <span class="text-red-400">DOWN: <span id="stat-active-down">0</span> <span id="stat-active-down-sol" class="text-gray-500">(0.00 SOL)</span></span>
                                 </div>
                                 <div class="flex justify-between items-center border-t border-orange-500/20 pt-1 mt-1"><span class="text-orange-300/70">Est. Win Payout:</span><span id="stat-payout" class="text-yellow-400 font-bold">0.00 SOL</span></div>
                             </div>
@@ -241,11 +238,10 @@
                 <div><strong class="text-white block mb-1 text-base border-l-4 border-orange-500 pl-2">3. PRICING FORMULA</strong><p class="mb-2">The system maintains a constant invariant: <code>Price(UP) + Price(DOWN) = 0.1 SOL</code>.</p><div class="bg-black/50 p-3 rounded border border-orange-900/50 font-mono text-xs text-green-400">Share Price = (Liquidity_In_Direction / Total_Liquidity) * 0.1</div><p class="mt-2 text-xs text-gray-500">Note: A small virtual liquidity buffer (50 shares) is applied to both sides at the start of a frame to prevent infinite price swings on the very first bet.</p></div>
                 <div><strong class="text-white block mb-1 text-base border-l-4 border-orange-500 pl-2">4. PAYOUTS & FEES</strong><ul class="list-disc list-inside ml-2 space-y-2 text-orange-100/80 text-xs"><li><strong>THE ASH PILE (FEES):</strong> 5.52% of the Total Volume (all wagers combined) is deducted automatically. This revenue is sent to the Fee Wallet to buy back and burn <strong>$ASDFASDFA</strong>.</li><li><strong>House Reserve:</strong> 0.48% is retained to cover Solana network rent and transaction gas fees.</li><li><strong>The Winner's Pot:</strong> The remaining 94% of the Total Volume is the pot.</li><li><strong>Distribution:</strong> the pot is then distributed to winners divided among them based on how many shares they own, proportional to the total amount of winning shares.</li><li class="text-red-400"><strong>TOTAL MELTDOWN (FLAT MARKET):</strong> If the Open Price and Close Price are identical (0.00% Change), nobody wins. The house burns down. 99% of the pot is sent to the incinerator (Fee Wallet).</li><li class="text-red-400"><strong>THE HEDGE PARADOX:</strong> If you hold an exact equal amount of UP and DOWN shares (a flat position), you have signaled no conviction. The system treats this as a LOSS, regardless of the outcome. You will receive 0 payout.</li></ul></div>
                 <div><strong class="text-white block mb-1 text-base border-l-4 border-orange-500 pl-2">5. SCENARIOS</strong><div class="space-y-3 text-xs mt-2"><div class="bg-black/30 p-3 rounded border-l-2 border-green-500"><span class="text-green-400 font-bold block mb-1">Scenario A: The Crowd Follower (Consensus)</span><p class="opacity-80"><strong>The Situation:</strong> The market is bullish. 90 SOL is on UP, 10 SOL is on DOWN.<br><strong>Your Bet:</strong> You bet 1 SOL on UP.<br><strong>The Outcome:</strong> UP Wins.<br><strong>The Math:</strong> The Pot is ~94 SOL. You own roughly 1.1% of the winning pool.<br><strong>Result:</strong> You receive ~1.04 SOL back. A small, safe 4% profit.</p></div><div class="bg-black/30 p-3 rounded border-l-2 border-yellow-500"><span class="text-yellow-400 font-bold block mb-1">Scenario B: The Contrarian (Longshot)</span><p class="opacity-80"><strong>The Situation:</strong> The market is bullish (90 SOL UP vs 10 SOL DOWN).<br><strong>Your Bet:</strong> You bet 1 SOL on DOWN (The Underdog).<br><strong>The Outcome:</strong> DOWN Wins.<br><strong>The Math:</strong> The Pot is ~94 SOL. You own roughly 10% of the winning pool (since the pool is small).<br><strong>Result:</strong> You receive ~9.40 SOL back. A massive 840% profit for betting against the crowd.</p></div></div></div>
-                
                 <div class="mt-6 border-t-2 border-red-900/50 pt-4 bg-red-900/10 p-4 rounded"><strong class="text-red-500 block mb-1 text-lg">⚠️ DISCLAIMER & RISK WARNING</strong><p class="text-xs text-orange-200 leading-relaxed">This platform is currently LIVE on Solana Mainnet. The operators are not responsible for lost funds, smart contract errors, oracle latency, or network failures. <br><br><strong>PREDICT RESPONSIBLY:</strong> Never wager funds you cannot afford to lose. This is an experimental technology demonstration.</p></div>
             </div>
         </div>
-        <div class="text-center text-xs text-gray-500 font-mono pt-2 border-t border-orange-900/50"><span class="text-orange-400">Frontend v103.2</span> | Backend <span id="backend-version">v---</span></div>
+        <div class="text-center text-xs text-gray-500 font-mono pt-2 border-t border-orange-900/50"><span class="text-orange-400">Frontend v104.0</span> | Backend <span id="backend-version">v---</span></div>
     </div>
 
     <!-- SHARE MODAL -->
@@ -276,6 +272,7 @@
             PublicKey = solanaWeb3.PublicKey;
             SystemProgram = solanaWeb3.SystemProgram;
             Transaction = solanaWeb3.Transaction;
+            
             // FIXED: Use Helius RPC for the browser connection to bypass 403 errors
             state.conn = new solanaWeb3.Connection(HELIUS_RPC_URL, {
                 commitment: 'confirmed',
@@ -338,6 +335,7 @@
 
     function formatChange(el, val) { if (!val) val = 0; const sign = val >= 0 ? '+' : ''; const color = val > 0 ? 'text-green-400' : (val < 0 ? 'text-red-400' : 'text-gray-400'); el.innerHTML = `<span class="${color}">${sign}${val.toFixed(2)}%</span>`; }
     
+    // GLOBAL SCOPE FOR ONCLICK
     window.toggleHistory = function() {
         state.isHistoryExpanded = !state.isHistoryExpanded;
         const container = ui.historyContainer;
@@ -371,42 +369,60 @@
     function adjustQty(n) { if(ui.qty.disabled) return; let v = parseInt(ui.qty.value) + n; if(v < 1) v = 1; ui.qty.value = Math.floor(v); updateCosts(); }
     function updateCosts() { const q = parseInt(ui.qty.value) || 0; if(state.prices.up && ui.costUp) { ui.costUp.innerText = (q * state.prices.up).toFixed(3) + " SOL"; ui.costDown.innerText = (q * state.prices.down).toFixed(3) + " SOL"; } }
 
-    // --- SHARE STATS LOGIC ---
-    window.openShareModal = function() {
+    // --- SHARE STATS LOGIC (UPDATED) ---
+    window.openShareModal = async function() {
+        // Ensure Image is Loaded
+        if (!state.baseImageSrc) {
+             try {
+                 const res = await fetch(`${API_URL}/share-image`);
+                 const d = await res.json();
+                 state.baseImageSrc = d.image;
+             } catch(e) { console.error(e); }
+        }
+
         const canvas = document.createElement('canvas');
         canvas.width = 800; canvas.height = 400;
         const ctx = canvas.getContext('2d');
         
         const drawContent = () => {
-             const grd = ctx.createLinearGradient(0, 0, 0, 400);
-             grd.addColorStop(0, "#451a03"); grd.addColorStop(1, "#ea580c");
-             ctx.fillStyle = grd; ctx.fillRect(0, 0, 800, 400);
-
-             ctx.font = "bold 40px monospace"; ctx.fillStyle = "white"; ctx.fillText("ASDForecast", 40, 60);
-             ctx.font = "20px monospace"; ctx.fillStyle = "#fb923c"; ctx.fillText("15m Binary Prediction Market", 40, 90);
-
-             let totalWon = 0;
-             let rate = "0%";
-             let wins = 0;
-             let total = 0;
-             let vol = "0 SOL";
-
-             if (state.userLog) {
-                 wins = parseInt(document.getElementById('stat-winrate').innerText.split('(')[1]) || 0;
-                 total = parseInt(document.getElementById('stat-winrate').innerText.split('/')[1]) || 0;
-                 rate = document.getElementById('stat-winrate').innerText.split('%')[0] + "%";
-                 vol = document.getElementById('stat-volume').innerText;
-                 Object.values(state.userLog).forEach(f => { if(f.payoutAmount) totalWon += f.payoutAmount; });
+             // Fallback Gradient if no image
+             if (!state.baseImageSrc) {
+                 const grd = ctx.createLinearGradient(0, 0, 0, 400);
+                 grd.addColorStop(0, "#451a03"); grd.addColorStop(1, "#ea580c");
+                 ctx.fillStyle = grd; ctx.fillRect(0, 0, 800, 400);
              }
 
-             ctx.fillStyle = "rgba(0,0,0,0.3)"; ctx.fillRect(40, 120, 720, 240);
-             ctx.fillStyle = "#fff"; ctx.font = "bold 30px monospace";
-             ctx.fillText(`WIN RATE: ${rate}`, 80, 180);
-             ctx.fillText(`W/L:      ${wins}/${total-wins}`, 80, 230);
-             ctx.fillText(`VOLUME:   ${vol}`, 80, 280);
-             ctx.fillStyle = "#4ade80"; ctx.fillText(`WON:      ${totalWon.toFixed(2)} SOL`, 80, 330);
+             // Title
+             ctx.strokeStyle = 'black'; ctx.lineWidth = 6;
+             ctx.font = "bold 40px monospace"; ctx.fillStyle = "white"; 
+             ctx.strokeText("ASDForecast", 40, 60); ctx.fillText("ASDForecast", 40, 60);
              
-             ctx.font = "14px monospace"; ctx.fillStyle = "#ffffffaa"; ctx.fillText("alonisthe.dev", 640, 380);
+             ctx.font = "20px monospace"; ctx.fillStyle = "#fb923c"; 
+             ctx.strokeText("15m Binary Prediction Market", 40, 90); ctx.fillText("15m Binary Prediction Market", 40, 90);
+
+             if (state.userLog) {
+                 const wins = parseInt(document.getElementById('stat-winrate').innerText.split('(')[1]) || 0;
+                 const total = parseInt(document.getElementById('stat-winrate').innerText.split('/')[1]) || 0;
+                 const rate = document.getElementById('stat-winrate').innerText.split('%')[0] + "%";
+                 const vol = document.getElementById('stat-volume').innerText;
+                 let totalWon = 0;
+                 Object.values(state.userLog).forEach(f => { if(f.payoutAmount) totalWon += f.payoutAmount; });
+
+                 // Stat Box Background
+                 ctx.fillStyle = "rgba(0,0,0,0.6)"; ctx.fillRect(40, 120, 720, 240);
+                 
+                 // Stat Text
+                 ctx.fillStyle = "#fff"; ctx.font = "bold 30px monospace"; ctx.lineWidth = 4;
+                 ctx.strokeText(`WIN RATE: ${rate}`, 80, 180); ctx.fillText(`WIN RATE: ${rate}`, 80, 180);
+                 ctx.strokeText(`W/L:      ${wins}/${total-wins}`, 80, 230); ctx.fillText(`W/L:      ${wins}/${total-wins}`, 80, 230);
+                 ctx.strokeText(`VOLUME:   ${vol}`, 80, 280); ctx.fillText(`VOLUME:   ${vol}`, 80, 280);
+                 
+                 ctx.fillStyle = "#4ade80"; 
+                 ctx.strokeText(`WON:      ${totalWon.toFixed(2)} SOL`, 80, 330); ctx.fillText(`WON:      ${totalWon.toFixed(2)} SOL`, 80, 330);
+             }
+             
+             ctx.font = "14px monospace"; ctx.fillStyle = "#ffffffaa"; ctx.lineWidth = 2;
+             ctx.strokeText("alonisthe.dev", 640, 380); ctx.fillText("alonisthe.dev", 640, 380);
              
              document.getElementById('share-preview').src = canvas.toDataURL('image/png');
              document.getElementById('share-modal').classList.remove('hidden');
@@ -414,7 +430,6 @@
 
         if (state.baseImageSrc) {
             const img = new Image();
-            img.crossOrigin = "Anonymous"; 
             img.onload = () => {
                 ctx.drawImage(img, 0, 0, 800, 400);
                 drawContent(); 
@@ -451,7 +466,6 @@
 
     function renderHistory() {
         if (!state.fullHistory || state.fullHistory.length === 0) { ui.historyRows.innerHTML = '<tr><td colspan="6" class="py-2 italic opacity-50">Waiting for first frame close...</td></tr>'; return; }
-        
         const now = Date.now();
         const validHistory = state.fullHistory.filter(f => (f.endTime || 0) <= now);
         const dataToShow = state.isHistoryExpanded ? validHistory.slice(0, 50) : validHistory.slice(0, 3);
@@ -507,9 +521,7 @@
             if(ui.lastUpdated && data.lastPriceTimestamp) ui.lastUpdated.innerText = `Price Data: ${new Date(data.lastPriceTimestamp).toLocaleTimeString()}`;
             if(data.backendVersion) ui.backendVersion.innerText = `v${data.backendVersion}`;
 
-            // Sync Image
-            state.baseImageSrc = data.baseImageSrc;
-
+            // --- STATE SYNC ---
             state.isResetting = data.isResetting;
             state.isCancelled = data.isCancelled;
 
@@ -519,6 +531,7 @@
                 ui.pauseOverlay.classList.remove('hidden');
                 ui.statusText.innerText = "RESETTING"; ui.statusText.className = "text-blue-400";
                 if(ui.pauseText) { ui.pauseText.innerText = "CALCULATING RESULTS..."; ui.pauseText.className = "text-blue-400 font-bold text-xl"; }
+                ui.timer.innerText = "Resetting..."; // Immediate feedback
             }
             else if (data.isCancelled) {
                 ui.netSharesHeader.innerText = "FRAME CANCELLED"; ui.netSharesHeader.classList.add("text-red-500"); 
@@ -537,11 +550,13 @@
             } else {
                 // LOCAL LOCKDOWN CHECK
                 if (state.targetEndTime && state.targetEndTime <= Date.now() + 500) {
+                     // Local timer says closed, waiting for backend
                      ui.netSharesHeader.innerText = "CALCULATING RESULTS..."; ui.netSharesHeader.classList.add("text-blue-400", "animate-pulse");
                      ui.btnUp.disabled = true; ui.btnDown.disabled = true; ui.qty.disabled = true;
                      ui.pauseOverlay.classList.remove('hidden');
                      if(ui.pauseText) { ui.pauseText.innerText = "CALCULATING RESULTS..."; ui.pauseText.className = "text-blue-400 font-bold text-xl"; }
                 } else {
+                     // OPEN
                      ui.netSharesHeader.innerText = "Net Shares Bought"; ui.netSharesHeader.classList.remove("text-red-500", "text-blue-400", "animate-pulse");
                      ui.btnUp.disabled = false; ui.btnDown.disabled = false; ui.qty.disabled = false;
                      ui.pauseOverlay.classList.add('hidden');
@@ -571,6 +586,7 @@
                 }
 
                 const ms = data.msUntilClose;
+                // ui.timer.innerText update moved to updateTimer()
                 if(data.currentVolume !== undefined) ui.currentPot.innerText = `${data.currentVolume.toFixed(3)} SOL`;
 
                 state.fullHistory = data.history || [];
@@ -587,6 +603,7 @@
                     ui.statWin.innerText = `${rate}% (${data.userStats.wins}/${total})`;
                     ui.statVol.innerText = `${data.userStats.totalSol.toFixed(3)} SOL`;
                     
+                    // LAST FRAME PERF (Check if Closed)
                     if (state.fullHistory.length > 0) {
                         const last = state.fullHistory[0];
                         const nowTime = Date.now();
@@ -614,6 +631,7 @@
                     const dS = data.activePosition.downShares || 0;
                     const dV = data.activePosition.downSol || 0;
 
+                    // FIXED FORMAT: SHARES (SOL)
                     if (ui.statActUp) ui.statActUp.innerHTML = `${Math.round(uS)} <span class="text-gray-500">(${uV.toFixed(2)} SOL)</span>`;
                     if (ui.statActDown) ui.statActDown.innerHTML = `${Math.round(dS)} <span class="text-gray-500">(${dV.toFixed(2)} SOL)</span>`;
                     
@@ -643,9 +661,11 @@
     }
 
     async function buy(dir) {
+        // LOCAL LOCKDOWN
         if (state.targetEndTime && state.targetEndTime <= Date.now() + 500) {
             return alert("Market has closed. Calculating results.");
         }
+
         if(!state.isOnline) return alert("System Offline");
         const qty = parseInt(ui.qty.value);
         const cost = qty * (dir==='UP'?state.prices.up:state.prices.down);

@@ -35,7 +35,7 @@ const UPKEEP_PERCENT = 0.0048; // 0.48%
 const RESERVE_SOL = 0.02;
 const SWEEP_TARGET = 0.05;
 const FRAME_DURATION = 15 * 60 * 1000; 
-const BACKEND_VERSION = "112.0"; // Env Var Image + Full Features
+const BACKEND_VERSION = "113.0"; // Server-Side Image Caching
 
 const PRIORITY_FEE_UNITS = 50000; 
 
@@ -67,6 +67,32 @@ async function atomicWrite(filePath, data) {
         console.error(`> [IO] Write Error on ${filePath}:`, e.message);
     }
 }
+
+// --- IMAGE CACHING ---
+let cachedShareImage = null;
+async function initShareImage() {
+    const src = process.env.BASE_IMAGE_SRC;
+    if (!src) {
+        console.log("> [SYS] No BASE_IMAGE_SRC env variable found.");
+        return;
+    }
+    if (src.startsWith('http')) {
+        try {
+            console.log("> [SYS] Fetching and caching share image...");
+            const response = await axios.get(src, { responseType: 'arraybuffer' });
+            const buffer = Buffer.from(response.data, 'binary');
+            const type = response.headers['content-type'];
+            cachedShareImage = `data:${type};base64,${buffer.toString('base64')}`;
+            console.log("> [SYS] Share image cached successfully.");
+        } catch (e) {
+            console.error("> [ERR] Failed to cache share image:", e.message);
+        }
+    } else {
+        // Assume it's already a data URI or raw base64
+        cachedShareImage = src;
+    }
+}
+initShareImage();
 
 let houseKeypair;
 try {
@@ -140,7 +166,6 @@ async function saveSystemState() {
         isCancelled: gameState.isCancelled,
         lastPriceTimestamp: gameState.lastPriceTimestamp
     });
-    
     await atomicWrite(STATS_FILE, globalStats);
 
     if (gameState.candleStartTime > 0) {
@@ -199,7 +224,6 @@ async function updateASDFPurchases() {
     } catch (e) { console.error("> [ASDF] History Check Failed:", e.message); }
 }
 
-// --- LEADERBOARD ---
 async function updateLeaderboard() {
     try {
         const files = await fs.readdir(USERS_DIR);
@@ -234,7 +258,6 @@ function getCurrentWindowStart() {
     return start.getTime();
 }
 
-// --- QUEUE & PAYOUTS ---
 async function processPayoutQueue() {
     const release = await payoutMutex.acquire();
     try {
@@ -304,7 +327,6 @@ async function processPayoutQueue() {
                     }
                 }
             } catch (e) { console.error(`> [QUEUE] Batch Failed: ${e.message}`); }
-
             queueData.shift();
             await atomicWrite(QUEUE_FILE, queueData);
         }
@@ -342,7 +364,6 @@ async function queuePayouts(frameId, result, bets, totalVolume) {
         for (const [pubKey, pos] of Object.entries(userPositions)) {
             const rUp = Math.round(pos.up * 10000) / 10000;
             const rDown = Math.round(pos.down * 10000) / 10000;
-            
             let userDir = "FLAT";
             if (rUp > rDown) userDir = "UP";
             else if (rDown > rUp) userDir = "DOWN";
@@ -420,6 +441,7 @@ async function executeFrameCancellation() {
     }
     await saveSystemState();
 }
+
 
 async function closeFrame(closePrice, closeTime) {
     const release = await stateMutex.acquire(); 
@@ -510,22 +532,6 @@ async function closeFrame(closePrice, closeTime) {
             }));
         }
 
-        // DEBUG: LOG TOP 2
-        const frameParticipants = [];
-        for (const [pubKey, pos] of Object.entries(userPositions)) {
-             const rUp = Math.round(pos.up);
-             const rDown = Math.round(pos.down);
-             let dir = rUp > rDown ? 'UP' : (rDown > rUp ? 'DOWN' : 'FLAT');
-             if (rUp === rDown) dir = 'FLAT'; // Explicit
-             frameParticipants.push({ 
-                key: pubKey.slice(0, 6), shares: Math.max(rUp, rDown), sol: pos.sol, dir: dir 
-            });
-        }
-        frameParticipants.sort((a, b) => b.shares - a.shares);
-        console.log(`> [DEBUG] Frame ${frameId} Results (Top 2):`);
-        if (frameParticipants[0]) console.log(`> 1st: ${frameParticipants[0].key} | ${frameParticipants[0].dir}`);
-        if (frameParticipants[1]) console.log(`> 2nd: ${frameParticipants[1].key} | ${frameParticipants[1].dir}`);
-
         processedSignatures.clear();
         await fs.writeFile(SIGS_FILE, '');
 
@@ -546,7 +552,6 @@ async function updatePrice() {
     let fetchedPrice = 0;
     let priceFound = false;
 
-    // 1. PYTH HERMES
     try {
         const response = await axios.get(`${PYTH_HERMES_URL}?ids[]=${SOL_FEED_ID}`, { timeout: 2000 });
         if (response.data && response.data.parsed && response.data.parsed[0]) {
@@ -556,7 +561,6 @@ async function updatePrice() {
         }
     } catch (e) { console.log(`Pyth Failed: ${e.message}`); }
 
-    // 2. FALLBACK COINGECKO
     if (!priceFound) {
         try {
             const response = await axios.get('https://api.coingecko.com/api/v3/simple/price', {
@@ -580,17 +584,13 @@ async function updatePrice() {
             
             if (gameState.isPaused) {
                 const timeRemaining = (gameState.candleStartTime + FRAME_DURATION) - Date.now();
-                
-                // Auto-Cancel Trigger
                 if (!gameState.isCancelled && timeRemaining < 300000 && timeRemaining > 0) {
                     console.log("⚠️ Auto-cancelling due to prolonged pause...");
                     await executeFrameCancellation();
                     return;
                 }
-
                 if (currentWindowStart > gameState.candleStartTime) {
                     console.log("> [SYS] Unpausing for new Frame.");
-                    
                     if (!gameState.isCancelled) {
                          const skippedFrameRecord = {
                             id: gameState.candleStartTime,
@@ -610,7 +610,6 @@ async function updatePrice() {
                         gameState.isCancelled = false;
                         gameState.isPaused = false;
                     }
-
                     gameState.candleStartTime = currentWindowStart;
                     gameState.candleOpen = fetchedPrice;
                     await saveSystemState();
@@ -642,10 +641,27 @@ async function updatePrice() {
     }
 }
 
+async function executeFrameCancellation() {
+    gameState.isPaused = true;
+    gameState.isCancelled = true;
+    if (gameState.bets.length > 0) {
+        console.log(`> [CANCEL] Auto/Admin Cancellation. Refunding ${gameState.bets.length} bets...`);
+        const betsToRefund = [...gameState.bets];
+        const frameRecord = { id: gameState.candleStartTime, time: new Date(gameState.candleStartTime).toISOString(), result: "CANCELLED", totalSol: 0, winners: 0, payout: 0 };
+        historySummary.unshift(frameRecord);
+        await atomicWrite(HISTORY_FILE, historySummary);
+        gameState.bets = [];
+        gameState.poolShares = { up: 50, down: 50 };
+        processRefunds(gameState.candleStartTime, betsToRefund);
+    }
+    await saveSystemState();
+}
+
 setInterval(updatePrice, 10000); 
 updatePrice(); 
 processPayoutQueue();
 
+// --- ENDPOINTS ---
 app.get('/api/state', async (req, res) => {
     const now = new Date();
     const nextWindowStart = getCurrentWindowStart() + FRAME_DURATION;
@@ -653,9 +669,11 @@ app.get('/api/state', async (req, res) => {
     const priceChange = gameState.price - gameState.candleOpen;
     const percentChange = gameState.candleOpen ? (priceChange / gameState.candleOpen) * 100 : 0;
     const currentVolume = gameState.bets.reduce((acc, b) => acc + b.costSol, 0);
+
     const totalShares = gameState.poolShares.up + gameState.poolShares.down;
     const priceUp = (gameState.poolShares.up / totalShares) * PRICE_SCALE;
     const priceDown = (gameState.poolShares.down / totalShares) * PRICE_SCALE;
+
     const nowTime = Date.now();
     const history = gameState.sharePriceHistory || [];
     const baseline = { up: 0.05, down: 0.05 };
@@ -669,6 +687,7 @@ app.get('/api/state', async (req, res) => {
         down5m: getPercentChange(priceDown, fiveMinAgo.down),
     };
     const uniqueUsers = new Set(gameState.bets.map(b => b.user)).size;
+    
     const userKey = req.query.user;
     let myStats = null;
     let activePosition = null;
@@ -690,9 +709,13 @@ app.get('/api/state', async (req, res) => {
         market: { priceUp, priceDown, sharesUp: gameState.poolShares.up, sharesDown: gameState.poolShares.down, changes: changes },
         history: historySummary, recentTrades: gameState.recentTrades, userStats: myStats, activePosition: activePosition,
         leaderboard: globalLeaderboard, lastPriceTimestamp: gameState.lastPriceTimestamp,
-        backendVersion: BACKEND_VERSION,
-        baseImageSrc: process.env.BASE_IMAGE_SRC // Pass Env Var
+        backendVersion: BACKEND_VERSION
     });
+});
+
+// --- SHARE IMAGE ENDPOINT ---
+app.get('/api/share-image', (req, res) => {
+    res.json({ image: cachedShareImage });
 });
 
 app.post('/api/verify-bet', async (req, res) => {
