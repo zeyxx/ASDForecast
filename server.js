@@ -37,12 +37,11 @@ const PAYOUT_MULTIPLIER = 0.94;
 const FEE_PERCENT = 0.0552; 
 const UPKEEP_PERCENT = 0.0048; // 0.48%
 const FRAME_DURATION = 15 * 60 * 1000; 
-const BACKEND_VERSION = "116.0"; // UPDATE: Scalability Guards
+const BACKEND_VERSION = "118.0"; // UPDATE: Global Stats & User Tracking
 
 const PRIORITY_FEE_UNITS = 50000; 
 
 // --- RATE LIMITING ---
-// 1. Critical Write Limiter (Bets) - Strict
 const betLimiter = rateLimit({
 	windowMs: 1 * 60 * 1000, 
 	max: 10, 
@@ -51,11 +50,9 @@ const betLimiter = rateLimit({
 	legacyHeaders: false,
 });
 
-// 2. Read Limiter (State) - Generous but protective
-// Allows ~2 requests per second burst, or consistent polling every 2s
 const stateLimiter = rateLimit({
     windowMs: 1 * 60 * 1000, 
-    max: 120, // 120 requests per minute per IP
+    max: 120, 
     message: { error: "POLLING_LIMIT_EXCEEDED" },
     standardHeaders: true,
     legacyHeaders: false,
@@ -94,21 +91,14 @@ async function atomicWrite(filePath, data) {
 let cachedShareImage = null;
 async function initShareImage() {
     const src = process.env.BASE_IMAGE_SRC;
-    if (!src) {
-        console.log("> [SYS] No BASE_IMAGE_SRC env variable found.");
-        return;
-    }
+    if (!src) return;
     if (src.startsWith('http')) {
         try {
-            console.log("> [SYS] Fetching and caching share image...");
             const response = await axios.get(src, { responseType: 'arraybuffer' });
             const buffer = Buffer.from(response.data, 'binary');
             const type = response.headers['content-type'];
             cachedShareImage = `data:${type};base64,${buffer.toString('base64')}`;
-            console.log("> [SYS] Share image cached successfully.");
-        } catch (e) {
-            console.error("> [ERR] Failed to cache share image:", e.message);
-        }
+        } catch (e) { console.error("> [ERR] Failed to cache share image:", e.message); }
     } else {
         cachedShareImage = src;
     }
@@ -119,12 +109,8 @@ let houseKeypair;
 try {
     if (process.env.SOLANA_WALLET_JSON) {
         houseKeypair = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(process.env.SOLANA_WALLET_JSON)));
-        console.log(`> [AUTH] Wallet Loaded (ENV): ${houseKeypair.publicKey.toString()}`);
     } else if (fsSync.existsSync('house-wallet.json')) {
         houseKeypair = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fsSync.readFileSync('house-wallet.json'))));
-        console.log(`> [AUTH] Wallet Loaded (File): ${houseKeypair.publicKey.toString()}`);
-    } else {
-        console.warn("> [WARN] NO PRIVATE KEY. Payouts Disabled.");
     }
 } catch (e) { console.error("> [ERR] Wallet Load Failed:", e.message); }
 
@@ -143,9 +129,12 @@ let gameState = {
     isCancelled: false
 };
 let historySummary = [];
-let globalStats = { totalVolume: 0, totalFees: 0, totalASDF: 0, lastASDFSignature: null };
+// UPDATE: Added totalWinnings and totalLifetimeUsers
+let globalStats = { totalVolume: 0, totalFees: 0, totalASDF: 0, totalWinnings: 0, totalLifetimeUsers: 0, lastASDFSignature: null };
 let processedSignatures = new Set(); 
 let globalLeaderboard = [];
+let knownUsers = new Set(); // Memory set to track unique users for lifetime stats
+let currentQueueLength = 0; // Track queue length for status reporting
 
 function loadGlobalState() {
     try {
@@ -153,11 +142,12 @@ function loadGlobalState() {
         if (fsSync.existsSync(STATS_FILE)) {
             const loaded = JSON.parse(fsSync.readFileSync(STATS_FILE));
             globalStats = { ...globalStats, ...loaded };
+            if(!globalStats.totalWinnings) globalStats.totalWinnings = 0;
+            if(!globalStats.totalLifetimeUsers) globalStats.totalLifetimeUsers = 0;
         }
         if (fsSync.existsSync(SIGS_FILE)) {
             const fileContent = fsSync.readFileSync(SIGS_FILE, 'utf-8');
             const lines = fileContent.split('\n');
-            // SCALABILITY: Limit loaded signatures to avoid memory bloat
             lines.slice(-5000).forEach(line => { if(line.trim()) processedSignatures.add(line.trim()); });
         }
         if (fsSync.existsSync(STATE_FILE)) {
@@ -173,6 +163,18 @@ function loadGlobalState() {
                 }
             }
         }
+        
+        // Initialize Known Users Set from Disk
+        console.log("> [SYS] Loading user registry...");
+        const userFiles = fsSync.readdirSync(USERS_DIR);
+        userFiles.forEach(f => {
+            if(f.startsWith('user_') && f.endsWith('.json')) {
+                knownUsers.add(f.replace('user_','').replace('.json',''));
+            }
+        });
+        globalStats.totalLifetimeUsers = knownUsers.size; // Sync stats with actual file count
+        console.log(`> [SYS] Registry loaded. ${knownUsers.size} lifetime users.`);
+
     } catch (e) { console.error("> [ERR] Load Error:", e); }
 }
 
@@ -283,9 +285,14 @@ function getCurrentWindowStart() {
 async function processPayoutQueue() {
     const release = await payoutMutex.acquire();
     try {
-        if (!houseKeypair || !fsSync.existsSync(QUEUE_FILE)) return;
+        if (!houseKeypair || !fsSync.existsSync(QUEUE_FILE)) {
+            currentQueueLength = 0;
+            return;
+        }
         let queueData = [];
         try { queueData = JSON.parse(await fs.readFile(QUEUE_FILE, 'utf8')); } catch(e) { queueData = []; }
+        
+        currentQueueLength = queueData.length;
         if (!queueData || queueData.length === 0) return;
 
         console.log(`> [QUEUE] Processing ${queueData.length} batches...`);
@@ -351,6 +358,7 @@ async function processPayoutQueue() {
             } catch (e) { console.error(`> [QUEUE] Batch Failed: ${e.message}`); }
             queueData.shift();
             await atomicWrite(QUEUE_FILE, queueData);
+            currentQueueLength = queueData.length;
         }
     } catch (e) { console.error("> [QUEUE] Error:", e); }
     finally { release(); }
@@ -417,6 +425,7 @@ async function queuePayouts(frameId, result, bets, totalVolume) {
     try { if (fsSync.existsSync(QUEUE_FILE)) existingQueue = JSON.parse(await fs.readFile(QUEUE_FILE, 'utf8')); } catch(e) {}
     const newQueue = existingQueue.concat(queue);
     await atomicWrite(QUEUE_FILE, newQueue);
+    currentQueueLength = newQueue.length;
     processPayoutQueue();
 }
 
@@ -442,6 +451,7 @@ async function processRefunds(frameId, bets) {
     try { if (fsSync.existsSync(QUEUE_FILE)) existingQueue = JSON.parse(await fs.readFile(QUEUE_FILE, 'utf8')); } catch(e) {}
     const newQueue = existingQueue.concat(queue);
     await atomicWrite(QUEUE_FILE, newQueue);
+    currentQueueLength = newQueue.length;
     processPayoutQueue();
 }
 
@@ -507,7 +517,10 @@ async function closeFrame(closePrice, closeTime) {
                 if (rUp === rDown) dir = "FLAT";
                 if (dir === result) winnerCount++;
             }
-            if (winnerCount > 0) payoutTotal = potSol;
+            if (winnerCount > 0) {
+                payoutTotal = potSol;
+                globalStats.totalWinnings += payoutTotal; // UPDATE: Track global winnings
+            }
         }
 
         const frameRecord = {
@@ -673,7 +686,6 @@ updatePrice();
 processPayoutQueue();
 
 // --- ENDPOINTS ---
-// UPDATE: Added stateLimiter to protect against DDoS
 app.get('/api/state', stateLimiter, async (req, res) => {
     const now = new Date();
     const nextWindowStart = getCurrentWindowStart() + FRAME_DURATION;
@@ -714,6 +726,10 @@ app.get('/api/state', stateLimiter, async (req, res) => {
             wageredSol: userBets.reduce((a, b) => a + b.costSol, 0)
         };
     }
+    
+    // UPDATE: Add payment status info
+    const lastFramePot = historySummary.length > 0 ? historySummary[0].totalSol : 0;
+    
     res.json({
         price: gameState.price, openPrice: gameState.candleOpen, candleStartTime: gameState.candleStartTime, candleEndTime: gameState.candleStartTime + FRAME_DURATION,
         change: percentChange, msUntilClose: msUntilClose, currentVolume: currentVolume, uniqueUsers: uniqueUsers,
@@ -721,7 +737,11 @@ app.get('/api/state', stateLimiter, async (req, res) => {
         market: { priceUp, priceDown, sharesUp: gameState.poolShares.up, sharesDown: gameState.poolShares.down, changes: changes },
         history: historySummary, recentTrades: gameState.recentTrades, userStats: myStats, activePosition: activePosition,
         leaderboard: globalLeaderboard, lastPriceTimestamp: gameState.lastPriceTimestamp,
-        backendVersion: BACKEND_VERSION
+        backendVersion: BACKEND_VERSION,
+        // NEW FIELDS
+        payoutQueueLength: currentQueueLength,
+        lastFramePot: lastFramePot,
+        totalLifetimeUsers: globalStats.totalLifetimeUsers
     });
 });
 
@@ -781,6 +801,14 @@ app.post('/api/verify-bet', betLimiter, async (req, res) => {
 
         if (direction === 'UP') gameState.poolShares.up += sharesReceived;
         else gameState.poolShares.down += sharesReceived;
+
+        // UPDATE: Check and update knownUsers for lifetime stats
+        if (!knownUsers.has(userPubKey)) {
+            knownUsers.add(userPubKey);
+            globalStats.totalLifetimeUsers++;
+            // We write stats to disk at the end of the block or interval, 
+            // but saveSystemState handles atomic writes effectively.
+        }
 
         getUser(userPubKey).then(userData => {
             userData.totalSol += solAmount;
