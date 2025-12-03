@@ -1,4 +1,4 @@
-<!-- ASDForecast v106.0 // MASTER MERGE: SHARE CARD FONT IMPROVEMENT -->
+<!-- ASDForecast v107.0 // MASTER MERGE: SHARE CARD WALLET ID -->
 
 <!-- Dependencies -->
 <script src="https://cdn.tailwindcss.com"></script>
@@ -241,7 +241,7 @@
                 <div class="mt-6 border-t-2 border-red-900/50 pt-4 bg-red-900/10 p-4 rounded"><strong class="text-red-500 block mb-1 text-lg">⚠️ DISCLAIMER & RISK WARNING</strong><p class="text-xs text-orange-200 leading-relaxed">This platform is currently LIVE on Solana Mainnet. The operators are not responsible for lost funds, smart contract errors, oracle latency, or network failures. <br><br><strong>PREDICT RESPONSIBLY:</strong> Never wager funds you cannot afford to lose. This is an experimental technology demonstration.</p></div>
             </div>
         </div>
-        <div class="text-center text-xs text-gray-500 font-mono pt-2 border-t border-orange-900/50"><span class="text-orange-400">Frontend v106.0</span> | Backend <span id="backend-version">v---</span></div>
+        <div class="text-center text-xs text-gray-500 font-mono pt-2 border-t border-orange-900/50"><span class="text-orange-400">Frontend v107.0</span> | Backend <span id="backend-version">v---</span></div>
     </div>
 
     <!-- SHARE MODAL -->
@@ -414,6 +414,16 @@
              ctx.font = "20px sans-serif"; ctx.fillStyle = "#fb923c"; 
              ctx.strokeText("15m Binary Prediction Market", 40, 90); ctx.fillText("15m Binary Prediction Market", 40, 90);
 
+             // ADDED: Wallet ID Draw
+             if (state.pubKey) {
+                 ctx.font = "bold 24px sans-serif";
+                 ctx.fillStyle = "#fb923c"; // Orange 400
+                 ctx.textAlign = "right";
+                 // Draw first 5 chars + ...
+                 ctx.fillText(state.pubKey.toString().slice(0, 5) + "...", 760, 60);
+                 ctx.textAlign = "left"; // Reset for subsequent draws
+             }
+
              if (state.userLog) {
                  const wins = parseInt(document.getElementById('stat-winrate').innerText.split('(')[1]) || 0;
                  const total = parseInt(document.getElementById('stat-winrate').innerText.split('/')[1]) || 0;
@@ -506,7 +516,7 @@
 
     function renderTicker(trades) {
         if(!trades || !ui.ticker) return;
-        ui.ticker.innerHTML = trades.slice(0,10).map(t => `<div class="ticker-item">[ ${t.user.slice(0,4)}.. bought <span class="${t.direction==='UP'?'text-green-400':'text-red-400'}">${t.shares.toFixed(1)} ${t.direction}</span> ]</div>`).join('') + trades.slice(0,10).map(t => `<div class="ticker-item">[ ${t.user.slice(0,4)}.. bought <span class="${t.direction==='UP'?'text-green-400':'text-red-400'}">${t.shares.toFixed(1)} ${t.direction}</span> ]</div>`).join('');
+        ui.ticker.innerHTML = trades.slice(0,10).map(t => `<div class="ticker-item">[ ${t.user.slice(0,4)}.. bought <span class="${t.direction==='UP'?'text-green-400':'text-red-400'}">${t.shares.toFixed(1)} ${t.direction}</span> ]</div>`).join('');
     }
 
     function renderLeaderboard(data) {
