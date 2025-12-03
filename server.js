@@ -22,10 +22,8 @@ const FEE_WALLET = new PublicKey("5xfyqaDzaj1XNvyz3gnuRJMSNUzGkkMbYbh2bKzWxuan")
 const UPKEEP_WALLET = new PublicKey("BH8aAiEDgZGJo6pjh32d5b6KyrNt6zA9U8WTLZShmVXq");
 
 // --- ORACLE CONFIG ---
-// Primary: Pyth Hermes
 const PYTH_HERMES_URL = "https://hermes.pyth.network/v2/updates/price/latest";
 const SOL_FEED_ID = "0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d";
-// Fallback: CoinGecko
 const COINGECKO_API_KEY = "CG-KsYLbF8hxVytbPTNyLXe7vWA";
 
 // --- CONFIG ---
@@ -36,9 +34,8 @@ const FEE_PERCENT = 0.0552;
 const RESERVE_SOL = 0.02;
 const SWEEP_TARGET = 0.05;
 const FRAME_DURATION = 15 * 60 * 1000; 
-const BACKEND_VERSION = "107.0"; // Oracle Fallback + Timestamps
+const BACKEND_VERSION = "108.0"; // Leaderboard Added
 
-// [OPTIMIZATION] Priority Fee
 const PRIORITY_FEE_UNITS = 50000; 
 
 // --- PERSISTENCE ---
@@ -60,7 +57,6 @@ const QUEUE_FILE = path.join(DATA_DIR, 'payout_queue.json');
 console.log(`> [SYS] Persistence Root: ${DATA_DIR}`);
 if (!process.env.HELIUS_API_KEY) console.warn("⚠️ [WARN] HELIUS_API_KEY is missing! RPC calls may fail.");
 
-// --- HELPER: ATOMIC WRITE ---
 async function atomicWrite(filePath, data) {
     const tempPath = `${filePath}.tmp`;
     try {
@@ -71,7 +67,6 @@ async function atomicWrite(filePath, data) {
     }
 }
 
-// --- KEY MANAGEMENT ---
 let houseKeypair;
 try {
     if (process.env.SOLANA_WALLET_JSON) {
@@ -88,7 +83,7 @@ try {
 // --- STATE ---
 let gameState = {
     price: 0,
-    lastPriceTimestamp: 0, // NEW: Track when price was fetched
+    lastPriceTimestamp: 0, 
     candleOpen: 0,
     candleStartTime: 0,
     poolShares: { up: 50, down: 50 },
@@ -101,8 +96,8 @@ let gameState = {
 let historySummary = [];
 let globalStats = { totalVolume: 0, totalFees: 0, totalASDF: 0, lastASDFSignature: null };
 let processedSignatures = new Set(); 
+let globalLeaderboard = []; // New State Variable
 
-// --- I/O ---
 function loadGlobalState() {
     try {
         if (fsSync.existsSync(HISTORY_FILE)) historySummary = JSON.parse(fsSync.readFileSync(HISTORY_FILE));
@@ -200,6 +195,48 @@ async function updateASDFPurchases() {
     } catch (e) { console.error("> [ASDF] History Check Failed:", e.message); }
 }
 
+// --- LEADERBOARD GENERATOR ---
+async function updateLeaderboard() {
+    try {
+        const files = await fs.readdir(USERS_DIR);
+        const leaders = [];
+        
+        for (const file of files) {
+            if (!file.endsWith('.json')) continue;
+            try {
+                const raw = await fs.readFile(path.join(USERS_DIR, file), 'utf8');
+                const data = JSON.parse(raw);
+                
+                let totalWon = 0;
+                if (data.frameLog) {
+                    Object.values(data.frameLog).forEach(log => {
+                        if (log.payoutAmount) totalWon += log.payoutAmount;
+                    });
+                }
+
+                const totalGames = data.wins + data.losses;
+                if (totalGames > 0) {
+                     leaders.push({
+                        pubKey: file.replace('user_', '').replace('.json', ''),
+                        wins: data.wins,
+                        bets: totalGames, // Total Bets
+                        winRate: (data.wins / totalGames) * 100,
+                        totalWon: totalWon
+                    });
+                }
+            } catch(e) {}
+        }
+        
+        // Sort by Total SOL Won descending
+        leaders.sort((a, b) => b.totalWon - a.totalWon);
+        globalLeaderboard = leaders.slice(0, 5); // Top 5
+        
+    } catch (e) { console.error("Leaderboard Error:", e.message); }
+}
+
+setInterval(updateLeaderboard, 60000); // Run every minute
+updateLeaderboard(); // Run on startup
+
 function getCurrentWindowStart() {
     const now = new Date();
     const minutes = Math.floor(now.getMinutes() / 15) * 15;
@@ -228,7 +265,6 @@ async function processPayoutQueue() {
                 const tx = new Transaction();
                 const priorityFeeIx = ComputeBudgetProgram.setComputeUnitPrice({ microLamports: PRIORITY_FEE_UNITS });
                 tx.add(priorityFeeIx);
-
                 let hasInstructions = false;
                 const validRecipients = [];
                 
@@ -486,7 +522,6 @@ async function updatePrice() {
     let fetchedPrice = 0;
     let priceFound = false;
 
-    // 1. TRY PYTH HERMES
     try {
         const response = await axios.get(`${PYTH_HERMES_URL}?ids[]=${SOL_FEED_ID}`, { timeout: 2000 });
         if (response.data && response.data.parsed && response.data.parsed[0]) {
@@ -496,7 +531,6 @@ async function updatePrice() {
         }
     } catch (e) { console.log(`Pyth Failed: ${e.message}`); }
 
-    // 2. FALLBACK COINGECKO
     if (!priceFound) {
         try {
             const response = await axios.get('https://api.coingecko.com/api/v3/simple/price', {
@@ -513,13 +547,14 @@ async function updatePrice() {
     if (priceFound) {
         await stateMutex.runExclusive(async () => {
             gameState.price = fetchedPrice;
-            gameState.lastPriceTimestamp = Date.now(); // Update Timestamp
+            gameState.lastPriceTimestamp = Date.now();
             
             const currentWindowStart = getCurrentWindowStart();
             if (gameState.isResetting) return;
             
             if (gameState.isPaused) {
                 if (currentWindowStart > gameState.candleStartTime) {
+                    console.log("> [SYS] Unpausing for new Frame.");
                     const skippedFrameRecord = {
                         id: gameState.candleStartTime,
                         startTime: gameState.candleStartTime,
@@ -533,6 +568,7 @@ async function updatePrice() {
                     historySummary.unshift(skippedFrameRecord);
                     if(historySummary.length > 100) historySummary = historySummary.slice(0,100);
                     await atomicWrite(HISTORY_FILE, historySummary);
+
                     gameState.isPaused = false; 
                     gameState.candleStartTime = currentWindowStart;
                     gameState.candleOpen = fetchedPrice;
@@ -592,6 +628,7 @@ app.get('/api/state', async (req, res) => {
         down5m: getPercentChange(priceDown, fiveMinAgo.down),
     };
     const uniqueUsers = new Set(gameState.bets.map(b => b.user)).size;
+    
     const userKey = req.query.user;
     let myStats = null;
     let activePosition = null;
@@ -613,13 +650,13 @@ app.get('/api/state', async (req, res) => {
         market: { priceUp, priceDown, sharesUp: gameState.poolShares.up, sharesDown: gameState.poolShares.down, changes: changes },
         history: historySummary, recentTrades: gameState.recentTrades, userStats: myStats, activePosition: activePosition,
         backendVersion: BACKEND_VERSION,
-        lastPriceTimestamp: gameState.lastPriceTimestamp // EXPOSE TIMESTAMP
+        leaderboard: globalLeaderboard, // Added Leaderboard
+        lastPriceTimestamp: gameState.lastPriceTimestamp
     });
 });
 
 app.post('/api/verify-bet', async (req, res) => {
     if (gameState.isPaused) return res.status(400).json({ error: "MARKET_PAUSED" });
-    if (gameState.isResetting) return res.status(503).json({ error: "CALCULATING_RESULTS" });
     const { signature, direction, userPubKey } = req.body;
     if (!signature || !userPubKey) return res.status(400).json({ error: "MISSING_DATA" });
     if (processedSignatures.has(signature)) return res.status(400).json({ error: "DUPLICATE_TX_DETECTED" });
@@ -649,7 +686,6 @@ app.post('/api/verify-bet', async (req, res) => {
         if (processedSignatures.has(signature)) return res.status(400).json({ error: "DUPLICATE_TX_DETECTED" });
         if (txBlockTime < gameState.candleStartTime) return res.status(400).json({ error: "TX_TIMESTAMP_EXPIRED" });
         if (gameState.isPaused) return res.status(400).json({ error: "MARKET_PAUSED" });
-        if (gameState.isResetting) return res.status(503).json({ error: "CALCULATING_RESULTS" });
 
         const totalShares = gameState.poolShares.up + gameState.poolShares.down;
         let price = 0.05; 
