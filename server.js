@@ -16,14 +16,17 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 
-// --- MAINNET CONFIGURATION (Transactions) ---
+// --- MAINNET CONFIGURATION ---
 const SOLANA_NETWORK = `https://mainnet.helius-rpc.com/?api-key=${process.env.HELIUS_API_KEY}`;
 const FEE_WALLET = new PublicKey("5xfyqaDzaj1XNvyz3gnuRJMSNUzGkkMbYbh2bKzWxuan");
 const UPKEEP_WALLET = new PublicKey("BH8aAiEDgZGJo6pjh32d5b6KyrNt6zA9U8WTLZShmVXq");
 
-// --- PYTH HERMES ORACLE CONFIG (Price) ---
+// --- ORACLE CONFIG ---
+// Primary: Pyth Hermes
 const PYTH_HERMES_URL = "https://hermes.pyth.network/v2/updates/price/latest";
 const SOL_FEED_ID = "0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d";
+// Fallback: CoinGecko
+const COINGECKO_API_KEY = "CG-KsYLbF8hxVytbPTNyLXe7vWA";
 
 // --- CONFIG ---
 const ASDF_MINT = "9zB5wRarXMj86MymwLumSKA1Dx35zPqqKfcZtK1Spump";
@@ -33,7 +36,7 @@ const FEE_PERCENT = 0.0552;
 const RESERVE_SOL = 0.02;
 const SWEEP_TARGET = 0.05;
 const FRAME_DURATION = 15 * 60 * 1000; 
-const BACKEND_VERSION = "106.0"; // Pyth Hermes Oracle
+const BACKEND_VERSION = "107.0"; // Oracle Fallback + Timestamps
 
 // [OPTIMIZATION] Priority Fee
 const PRIORITY_FEE_UNITS = 50000; 
@@ -85,6 +88,7 @@ try {
 // --- STATE ---
 let gameState = {
     price: 0,
+    lastPriceTimestamp: 0, // NEW: Track when price was fetched
     candleOpen: 0,
     candleStartTime: 0,
     poolShares: { up: 50, down: 50 },
@@ -114,7 +118,7 @@ function loadGlobalState() {
         if (fsSync.existsSync(STATE_FILE)) {
             const savedState = JSON.parse(fsSync.readFileSync(STATE_FILE));
             gameState = { ...gameState, ...savedState };
-            gameState.isResetting = false; // Reset lock on boot
+            gameState.isResetting = false; 
             
             if (gameState.candleStartTime > 0) {
                 const currentFrameFile = path.join(FRAMES_DIR, `frame_${gameState.candleStartTime}.json`);
@@ -135,7 +139,8 @@ async function saveSystemState() {
         recentTrades: gameState.recentTrades,
         sharePriceHistory: gameState.sharePriceHistory,
         isPaused: gameState.isPaused,
-        isResetting: gameState.isResetting
+        isResetting: gameState.isResetting,
+        lastPriceTimestamp: gameState.lastPriceTimestamp
     });
     
     await atomicWrite(STATS_FILE, globalStats);
@@ -181,10 +186,7 @@ async function updateASDFPurchases() {
         const signaturesDetails = await connection.getSignaturesForAddress(FEE_WALLET, options);
         if (signaturesDetails.length === 0) return;
         globalStats.lastASDFSignature = signaturesDetails[0].signature;
-        const txs = await connection.getParsedTransactions(
-            signaturesDetails.map(s => s.signature), 
-            { maxSupportedTransactionVersion: 0 }
-        );
+        const txs = await connection.getParsedTransactions(signaturesDetails.map(s => s.signature), { maxSupportedTransactionVersion: 0 });
         let newPurchasedAmount = 0;
         for (const tx of txs) {
             if (!tx || !tx.meta) continue;
@@ -235,7 +237,6 @@ async function processPayoutQueue() {
                         const uData = await getUser(item.pubKey);
                         if (uData.frameLog && uData.frameLog[frameId]) {
                             const entry = uData.frameLog[frameId];
-                            // IDEMPOTENCY CHECK
                             if (type === 'USER_PAYOUT' && entry.payoutTx) continue;
                             if (type === 'USER_REFUND' && entry.refundTx) continue;
                         }
@@ -314,14 +315,13 @@ async function queuePayouts(frameId, result, bets, totalVolume) {
         const eligibleWinners = [];
 
         for (const [pubKey, pos] of Object.entries(userPositions)) {
-            // --- PRECISION FIX: Round Shares before Comparing ---
             const rUp = Math.round(pos.up * 10000) / 10000;
             const rDown = Math.round(pos.down * 10000) / 10000;
             
             let userDir = "FLAT";
             if (rUp > rDown) userDir = "UP";
             else if (rDown > rUp) userDir = "DOWN";
-            else userDir = "FLAT"; // Strictly Equal Logic
+            if (pos.up === pos.down) userDir = "FLAT"; 
 
             if (userDir === result) {
                 const sharesHeld = result === "UP" ? pos.up : pos.down;
@@ -439,7 +439,6 @@ async function closeFrame(closePrice, closeTime) {
             userPositions[bet.user].sol += bet.costSol;
         });
 
-        // LOG WINNERS & UPDATE USERS
         const usersToUpdate = Object.entries(userPositions);
         const USER_IO_BATCH_SIZE = 20; 
         for (let i = 0; i < usersToUpdate.length; i += USER_IO_BATCH_SIZE) {
@@ -467,21 +466,6 @@ async function closeFrame(closePrice, closeTime) {
             }));
         }
 
-        // DEBUG: LOG TOP 2
-        const frameParticipants = [];
-        for (const [pubKey, pos] of Object.entries(userPositions)) {
-             const rUp = Math.round(pos.up);
-             const rDown = Math.round(pos.down);
-             let dir = rUp > rDown ? 'UP' : (rDown > rUp ? 'DOWN' : 'FLAT');
-             frameParticipants.push({ 
-                key: pubKey.slice(0, 6), shares: Math.max(rUp, rDown), sol: pos.sol, dir: dir 
-            });
-        }
-        frameParticipants.sort((a, b) => b.shares - a.shares);
-        console.log(`> [DEBUG] Frame ${frameId} Results (Top 2):`);
-        if (frameParticipants[0]) console.log(`> 1st: ${frameParticipants[0].key} | ${frameParticipants[0].dir}`);
-        if (frameParticipants[1]) console.log(`> 2nd: ${frameParticipants[1].key} | ${frameParticipants[1].dir}`);
-
         processedSignatures.clear();
         await fs.writeFile(SIGS_FILE, '');
 
@@ -499,77 +483,92 @@ async function closeFrame(closePrice, closeTime) {
 }
 
 async function updatePrice() {
+    let fetchedPrice = 0;
+    let priceFound = false;
+
+    // 1. TRY PYTH HERMES
     try {
-        // ORACLE: PYTH HERMES V2 (JSON)
-        const response = await axios.get(`${PYTH_HERMES_URL}?ids[]=${SOL_FEED_ID}`, {
-            timeout: 5000
-        });
-        
+        const response = await axios.get(`${PYTH_HERMES_URL}?ids[]=${SOL_FEED_ID}`, { timeout: 2000 });
         if (response.data && response.data.parsed && response.data.parsed[0]) {
-            const priceData = response.data.parsed[0].price;
-            const currentPrice = Number(priceData.price) * Math.pow(10, priceData.expo);
-            
-            await stateMutex.runExclusive(async () => {
-                gameState.price = currentPrice;
-                const currentWindowStart = getCurrentWindowStart();
-                
-                if (gameState.isResetting) return;
-                
-                if (gameState.isPaused) {
-                    if (currentWindowStart > gameState.candleStartTime) {
-                        console.log("> [SYS] Unpausing for new Frame.");
-                        const skippedFrameRecord = {
-                            id: gameState.candleStartTime,
-                            startTime: gameState.candleStartTime,
-                            endTime: gameState.candleStartTime + FRAME_DURATION,
-                            time: new Date(gameState.candleStartTime).toISOString(),
-                            open: gameState.candleOpen,
-                            close: currentPrice,
-                            result: "PAUSED", 
-                            sharesUp: 0, sharesDown: 0, totalSol: 0, winners: 0, payout: 0
-                        };
-                        historySummary.unshift(skippedFrameRecord);
-                        if(historySummary.length > 100) historySummary = historySummary.slice(0,100);
-                        await atomicWrite(HISTORY_FILE, historySummary);
-
-                        gameState.isPaused = false; 
-                        gameState.candleStartTime = currentWindowStart;
-                        gameState.candleOpen = currentPrice;
-                        await saveSystemState();
-                    }
-                    return;
-                }
-
-                if (currentWindowStart > gameState.candleStartTime) {
-                    if (gameState.candleStartTime === 0) {
-                        gameState.candleStartTime = currentWindowStart;
-                        gameState.candleOpen = currentPrice;
-                        await saveSystemState();
-                    } else {
-                        gameState.isResetting = true; 
-                        await saveSystemState();
-                        closeFrame(currentPrice, currentWindowStart);
-                    }
-                }
-
-                const totalS = gameState.poolShares.up + gameState.poolShares.down;
-                const pUp = (gameState.poolShares.up / totalS) * PRICE_SCALE;
-                const pDown = (gameState.poolShares.down / totalS) * PRICE_SCALE;
-                if (!gameState.sharePriceHistory) gameState.sharePriceHistory = [];
-                gameState.sharePriceHistory.push({ t: Date.now(), up: pUp, down: pDown });
-                const FIVE_MINS = 5 * 60 * 1000;
-                gameState.sharePriceHistory = gameState.sharePriceHistory.filter(x => x.t > Date.now() - FIVE_MINS);
-                await saveSystemState();
-            });
+            const p = response.data.parsed[0].price;
+            fetchedPrice = Number(p.price) * Math.pow(10, p.expo);
+            priceFound = true;
         }
-    } catch (e) { console.log("Oracle error:", e.message); }
+    } catch (e) { console.log(`Pyth Failed: ${e.message}`); }
+
+    // 2. FALLBACK COINGECKO
+    if (!priceFound) {
+        try {
+            const response = await axios.get('https://api.coingecko.com/api/v3/simple/price', {
+                params: { ids: 'solana', vs_currencies: 'usd', x_cg_demo_api_key: COINGECKO_API_KEY },
+                timeout: 4000
+            });
+            if (response.data.solana) {
+                fetchedPrice = response.data.solana.usd;
+                priceFound = true;
+            }
+        } catch (e) { console.log(`CoinGecko Failed: ${e.message}`); }
+    }
+
+    if (priceFound) {
+        await stateMutex.runExclusive(async () => {
+            gameState.price = fetchedPrice;
+            gameState.lastPriceTimestamp = Date.now(); // Update Timestamp
+            
+            const currentWindowStart = getCurrentWindowStart();
+            if (gameState.isResetting) return;
+            
+            if (gameState.isPaused) {
+                if (currentWindowStart > gameState.candleStartTime) {
+                    const skippedFrameRecord = {
+                        id: gameState.candleStartTime,
+                        startTime: gameState.candleStartTime,
+                        endTime: gameState.candleStartTime + FRAME_DURATION,
+                        time: new Date(gameState.candleStartTime).toISOString(),
+                        open: gameState.candleOpen,
+                        close: fetchedPrice,
+                        result: "PAUSED", 
+                        sharesUp: 0, sharesDown: 0, totalSol: 0, winners: 0, payout: 0
+                    };
+                    historySummary.unshift(skippedFrameRecord);
+                    if(historySummary.length > 100) historySummary = historySummary.slice(0,100);
+                    await atomicWrite(HISTORY_FILE, historySummary);
+                    gameState.isPaused = false; 
+                    gameState.candleStartTime = currentWindowStart;
+                    gameState.candleOpen = fetchedPrice;
+                    await saveSystemState();
+                }
+                return;
+            }
+
+            if (currentWindowStart > gameState.candleStartTime) {
+                if (gameState.candleStartTime === 0) {
+                    gameState.candleStartTime = currentWindowStart;
+                    gameState.candleOpen = fetchedPrice;
+                    await saveSystemState();
+                } else {
+                    gameState.isResetting = true; 
+                    await saveSystemState();
+                    closeFrame(fetchedPrice, currentWindowStart);
+                }
+            }
+
+            const totalS = gameState.poolShares.up + gameState.poolShares.down;
+            const pUp = (gameState.poolShares.up / totalS) * PRICE_SCALE;
+            const pDown = (gameState.poolShares.down / totalS) * PRICE_SCALE;
+            if (!gameState.sharePriceHistory) gameState.sharePriceHistory = [];
+            gameState.sharePriceHistory.push({ t: Date.now(), up: pUp, down: pDown });
+            const FIVE_MINS = 5 * 60 * 1000;
+            gameState.sharePriceHistory = gameState.sharePriceHistory.filter(x => x.t > Date.now() - FIVE_MINS);
+            await saveSystemState();
+        });
+    }
 }
 
 setInterval(updatePrice, 10000); 
 updatePrice(); 
 processPayoutQueue();
 
-// --- ENDPOINTS ---
 app.get('/api/state', async (req, res) => {
     const now = new Date();
     const nextWindowStart = getCurrentWindowStart() + FRAME_DURATION;
@@ -593,7 +592,6 @@ app.get('/api/state', async (req, res) => {
         down5m: getPercentChange(priceDown, fiveMinAgo.down),
     };
     const uniqueUsers = new Set(gameState.bets.map(b => b.user)).size;
-    
     const userKey = req.query.user;
     let myStats = null;
     let activePosition = null;
@@ -614,14 +612,14 @@ app.get('/api/state', async (req, res) => {
         platformStats: globalStats, isPaused: gameState.isPaused, isResetting: gameState.isResetting,
         market: { priceUp, priceDown, sharesUp: gameState.poolShares.up, sharesDown: gameState.poolShares.down, changes: changes },
         history: historySummary, recentTrades: gameState.recentTrades, userStats: myStats, activePosition: activePosition,
-        backendVersion: BACKEND_VERSION
+        backendVersion: BACKEND_VERSION,
+        lastPriceTimestamp: gameState.lastPriceTimestamp // EXPOSE TIMESTAMP
     });
 });
 
 app.post('/api/verify-bet', async (req, res) => {
     if (gameState.isPaused) return res.status(400).json({ error: "MARKET_PAUSED" });
     if (gameState.isResetting) return res.status(503).json({ error: "CALCULATING_RESULTS" });
-
     const { signature, direction, userPubKey } = req.body;
     if (!signature || !userPubKey) return res.status(400).json({ error: "MISSING_DATA" });
     if (processedSignatures.has(signature)) return res.status(400).json({ error: "DUPLICATE_TX_DETECTED" });
