@@ -1,6 +1,6 @@
 const express = require('express');
 const cors = require('cors');
-const { Connection, PublicKey, Keypair, Transaction, SystemProgram, sendAndConfirmTransaction } = require('@solana/web3.js');
+const { Connection, PublicKey, Keypair, Transaction, SystemProgram, sendAndConfirmTransaction, ComputeBudgetProgram } = require('@solana/web3.js');
 const axios = require('axios');
 const fs = require('fs').promises; 
 const fsSync = require('fs');      
@@ -16,22 +16,23 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 
-// --- MAINNET CONFIGURATION ---
+// --- CONFIGURATION ---
 const SOLANA_NETWORK = `https://mainnet.helius-rpc.com/?api-key=${process.env.HELIUS_API_KEY}`;
 const FEE_WALLET = new PublicKey("5xfyqaDzaj1XNvyz3gnuRJMSNUzGkkMbYbh2bKzWxuan");
 const UPKEEP_WALLET = new PublicKey("BH8aAiEDgZGJo6pjh32d5b6KyrNt6zA9U8WTLZShmVXq");
-
-// --- CONFIG ---
 const ASDF_MINT = "9zB5wRarXMj86MymwLumSKA1Dx35zPqqKfcZtK1Spump";
-const HELIUS_MAINNET_URL = SOLANA_NETWORK;
 const COINGECKO_API_KEY = "CG-KsYLbF8hxVytbPTNyLXe7vWA";
+
 const PRICE_SCALE = 0.1;
 const PAYOUT_MULTIPLIER = 0.94;
 const FEE_PERCENT = 0.0552; 
 const RESERVE_SOL = 0.02;
-const SWEEP_TARGET = 0.05;
 const FRAME_DURATION = 15 * 60 * 1000; 
-const BACKEND_VERSION = "100.5"; // Race Condition Fix
+const BACKEND_VERSION = "101.0"; // Priority Fees + Batch Optimization
+
+// [OPTIMIZATION] Priority Fee (MicroLamports). 
+// 50000 is a healthy baseline for Mainnet to ensure inclusion.
+const PRIORITY_FEE_UNITS = 50000; 
 
 // --- PERSISTENCE ---
 const RENDER_DISK_PATH = '/var/data';
@@ -50,7 +51,7 @@ const SIGS_FILE = path.join(DATA_DIR, 'signatures.log');
 const QUEUE_FILE = path.join(DATA_DIR, 'payout_queue.json'); 
 
 console.log(`> [SYS] Persistence Root: ${DATA_DIR}`);
-if (!process.env.HELIUS_API_KEY) console.warn("⚠️ [WARN] HELIUS_API_KEY is missing! RPC calls may fail.");
+if (!process.env.HELIUS_API_KEY) console.warn("⚠️ [WARN] HELIUS_API_KEY is missing!");
 
 // --- HELPER: ATOMIC WRITE ---
 async function atomicWrite(filePath, data) {
@@ -93,7 +94,6 @@ let historySummary = [];
 let globalStats = { totalVolume: 0, totalFees: 0, totalASDF: 0, lastASDFSignature: null };
 let processedSignatures = new Set(); 
 
-// --- I/O ---
 function loadGlobalState() {
     try {
         if (fsSync.existsSync(HISTORY_FILE)) historySummary = JSON.parse(fsSync.readFileSync(HISTORY_FILE));
@@ -109,7 +109,7 @@ function loadGlobalState() {
         if (fsSync.existsSync(STATE_FILE)) {
             const savedState = JSON.parse(fsSync.readFileSync(STATE_FILE));
             gameState = { ...gameState, ...savedState };
-            gameState.isResetting = false; // Reset lock on boot
+            gameState.isResetting = false; 
             
             if (gameState.candleStartTime > 0) {
                 const currentFrameFile = path.join(FRAMES_DIR, `frame_${gameState.candleStartTime}.json`);
@@ -132,9 +132,7 @@ async function saveSystemState() {
         isPaused: gameState.isPaused,
         isResetting: gameState.isResetting
     });
-    
     await atomicWrite(STATS_FILE, globalStats);
-
     if (gameState.candleStartTime > 0) {
         const frameFile = path.join(FRAMES_DIR, `frame_${gameState.candleStartTime}.json`);
         await atomicWrite(frameFile, {
@@ -176,10 +174,7 @@ async function updateASDFPurchases() {
         const signaturesDetails = await connection.getSignaturesForAddress(FEE_WALLET, options);
         if (signaturesDetails.length === 0) return;
         globalStats.lastASDFSignature = signaturesDetails[0].signature;
-        const txs = await connection.getParsedTransactions(
-            signaturesDetails.map(s => s.signature), 
-            { maxSupportedTransactionVersion: 0 }
-        );
+        const txs = await connection.getParsedTransactions(signaturesDetails.map(s => s.signature), { maxSupportedTransactionVersion: 0 });
         let newPurchasedAmount = 0;
         for (const tx of txs) {
             if (!tx || !tx.meta) continue;
@@ -201,7 +196,7 @@ function getCurrentWindowStart() {
     return start.getTime();
 }
 
-// --- QUEUE & PAYOUTS ---
+// --- OPTIMIZED QUEUE PROCESSOR ---
 async function processPayoutQueue() {
     const release = await payoutMutex.acquire();
     try {
@@ -210,7 +205,7 @@ async function processPayoutQueue() {
         try { queueData = JSON.parse(await fs.readFile(QUEUE_FILE, 'utf8')); } catch(e) { queueData = []; }
         if (!queueData || queueData.length === 0) return;
 
-        console.log(`> [QUEUE] Processing ${queueData.length} batches...`);
+        console.log(`> [QUEUE] Processing ${queueData.length} batches with Priority Fees...`);
         const connection = new Connection(SOLANA_NETWORK, 'confirmed');
         let processedCount = 0;
         
@@ -219,6 +214,13 @@ async function processPayoutQueue() {
             const { type, recipients, frameId } = batch;
             try {
                 const tx = new Transaction();
+                
+                // [OPTIMIZATION] ADD PRIORITY FEE INSTRUCTION
+                const priorityFeeIx = ComputeBudgetProgram.setComputeUnitPrice({
+                    microLamports: PRIORITY_FEE_UNITS 
+                });
+                tx.add(priorityFeeIx);
+
                 let hasInstructions = false;
                 const validRecipients = [];
                 
@@ -227,6 +229,7 @@ async function processPayoutQueue() {
                         const uData = await getUser(item.pubKey);
                         if (uData.frameLog && uData.frameLog[frameId]) {
                             const entry = uData.frameLog[frameId];
+                            // Strict Idempotency
                             if (type === 'USER_PAYOUT' && entry.payoutTx) continue;
                             if (type === 'USER_REFUND' && entry.refundTx) continue;
                         }
@@ -247,7 +250,10 @@ async function processPayoutQueue() {
                     }
 
                     if (hasInstructions) {
-                        const sig = await sendAndConfirmTransaction(connection, tx, [houseKeypair], { commitment: 'confirmed' });
+                        const sig = await sendAndConfirmTransaction(connection, tx, [houseKeypair], { 
+                            commitment: 'confirmed',
+                            maxRetries: 5 // [OPTIMIZATION] Retry logic
+                        });
                         console.log(`> [QUEUE] Batch Sent: ${sig}`);
 
                         if (type === 'USER_PAYOUT') {
@@ -311,7 +317,7 @@ async function queuePayouts(frameId, result, bets, totalVolume) {
             let userDir = "FLAT";
             if (rUp > rDown) userDir = "UP";
             else if (rDown > rUp) userDir = "DOWN";
-            if (pos.up === pos.down) userDir = "FLAT"; 
+            if (rUp === rDown) userDir = "FLAT"; 
 
             if (userDir === result) {
                 const sharesHeld = result === "UP" ? pos.up : pos.down;
@@ -321,7 +327,7 @@ async function queuePayouts(frameId, result, bets, totalVolume) {
         }
 
         if (totalWinningShares > 0) {
-            const BATCH_SIZE = 15; 
+            const BATCH_SIZE = 12; // [OPTIMIZATION] Reduced batch size for safety
             for (let i = 0; i < eligibleWinners.length; i += BATCH_SIZE) {
                 const batchWinners = eligibleWinners.slice(i, i + BATCH_SIZE);
                 const batchRecipients = [];
@@ -355,7 +361,8 @@ async function processRefunds(frameId, bets) {
     const queue = [];
     if (totalFee > 0) queue.push({ type: 'FEE', recipients: [{ pubKey: FEE_WALLET.toString(), amount: Math.floor(totalFee) }] });
     const recipients = Object.entries(refunds).map(([pub, amt]) => ({ pubKey: pub, amount: amt }));
-    const BATCH_SIZE = 15;
+    
+    const BATCH_SIZE = 12; // [OPTIMIZATION] Reduced batch size
     for (let i = 0; i < recipients.length; i += BATCH_SIZE) {
         const batch = recipients.slice(i, i + BATCH_SIZE);
         queue.push({ type: 'USER_REFUND', frameId: frameId, recipients: batch }); 
@@ -436,7 +443,6 @@ async function closeFrame(closePrice, closeTime) {
                 
                 const rUp = Math.round(pos.up * 10000) / 10000;
                 const rDown = Math.round(pos.down * 10000) / 10000;
-
                 let userDir = "FLAT";
                 if (rUp > rDown) userDir = "UP";
                 else if (rDown > rUp) userDir = "DOWN";
@@ -482,10 +488,9 @@ async function updatePrice() {
             await stateMutex.runExclusive(async () => {
                 gameState.price = currentPrice;
                 const currentWindowStart = getCurrentWindowStart();
-                
-                // --- FIXED RACE CONDITION ---
-                if (gameState.isResetting) return; // Already processing close, skip
 
+                if (gameState.isResetting) return;
+                
                 if (gameState.isPaused) {
                     if (currentWindowStart > gameState.candleStartTime) {
                         console.log("> [SYS] Unpausing for new Frame.");
@@ -517,7 +522,6 @@ async function updatePrice() {
                         gameState.candleOpen = currentPrice;
                         await saveSystemState();
                     } else {
-                        // LOCK AND TRIGGER
                         gameState.isResetting = true; 
                         await saveSystemState();
                         closeFrame(currentPrice, currentWindowStart);
