@@ -16,10 +16,14 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 
-// --- MAINNET CONFIGURATION ---
+// --- MAINNET CONFIGURATION (Transactions) ---
 const SOLANA_NETWORK = `https://mainnet.helius-rpc.com/?api-key=${process.env.HELIUS_API_KEY}`;
 const FEE_WALLET = new PublicKey("5xfyqaDzaj1XNvyz3gnuRJMSNUzGkkMbYbh2bKzWxuan");
 const UPKEEP_WALLET = new PublicKey("BH8aAiEDgZGJo6pjh32d5b6KyrNt6zA9U8WTLZShmVXq");
+
+// --- PYTH HERMES ORACLE CONFIG (Price) ---
+const PYTH_HERMES_URL = "https://hermes.pyth.network/v2/updates/price/latest";
+const SOL_FEED_ID = "0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d";
 
 // --- CONFIG ---
 const ASDF_MINT = "9zB5wRarXMj86MymwLumSKA1Dx35zPqqKfcZtK1Spump";
@@ -29,7 +33,7 @@ const FEE_PERCENT = 0.0552;
 const RESERVE_SOL = 0.02;
 const SWEEP_TARGET = 0.05;
 const FRAME_DURATION = 15 * 60 * 1000; 
-const BACKEND_VERSION = "105.0"; // Helius DAS getAsset Oracle
+const BACKEND_VERSION = "106.0"; // Pyth Hermes Oracle
 
 // [OPTIMIZATION] Priority Fee
 const PRIORITY_FEE_UNITS = 50000; 
@@ -133,7 +137,9 @@ async function saveSystemState() {
         isPaused: gameState.isPaused,
         isResetting: gameState.isResetting
     });
+    
     await atomicWrite(STATS_FILE, globalStats);
+
     if (gameState.candleStartTime > 0) {
         const frameFile = path.join(FRAMES_DIR, `frame_${gameState.candleStartTime}.json`);
         await atomicWrite(frameFile, {
@@ -175,7 +181,10 @@ async function updateASDFPurchases() {
         const signaturesDetails = await connection.getSignaturesForAddress(FEE_WALLET, options);
         if (signaturesDetails.length === 0) return;
         globalStats.lastASDFSignature = signaturesDetails[0].signature;
-        const txs = await connection.getParsedTransactions(signaturesDetails.map(s => s.signature), { maxSupportedTransactionVersion: 0 });
+        const txs = await connection.getParsedTransactions(
+            signaturesDetails.map(s => s.signature), 
+            { maxSupportedTransactionVersion: 0 }
+        );
         let newPurchasedAmount = 0;
         for (const tx of txs) {
             if (!tx || !tx.meta) continue;
@@ -217,6 +226,7 @@ async function processPayoutQueue() {
                 const tx = new Transaction();
                 const priorityFeeIx = ComputeBudgetProgram.setComputeUnitPrice({ microLamports: PRIORITY_FEE_UNITS });
                 tx.add(priorityFeeIx);
+
                 let hasInstructions = false;
                 const validRecipients = [];
                 
@@ -225,6 +235,7 @@ async function processPayoutQueue() {
                         const uData = await getUser(item.pubKey);
                         if (uData.frameLog && uData.frameLog[frameId]) {
                             const entry = uData.frameLog[frameId];
+                            // IDEMPOTENCY CHECK
                             if (type === 'USER_PAYOUT' && entry.payoutTx) continue;
                             if (type === 'USER_REFUND' && entry.refundTx) continue;
                         }
@@ -303,13 +314,14 @@ async function queuePayouts(frameId, result, bets, totalVolume) {
         const eligibleWinners = [];
 
         for (const [pubKey, pos] of Object.entries(userPositions)) {
+            // --- PRECISION FIX: Round Shares before Comparing ---
             const rUp = Math.round(pos.up * 10000) / 10000;
             const rDown = Math.round(pos.down * 10000) / 10000;
             
             let userDir = "FLAT";
             if (rUp > rDown) userDir = "UP";
             else if (rDown > rUp) userDir = "DOWN";
-            if (rUp === rDown) userDir = "FLAT"; 
+            else userDir = "FLAT"; // Strictly Equal Logic
 
             if (userDir === result) {
                 const sharesHeld = result === "UP" ? pos.up : pos.down;
@@ -427,6 +439,7 @@ async function closeFrame(closePrice, closeTime) {
             userPositions[bet.user].sol += bet.costSol;
         });
 
+        // LOG WINNERS & UPDATE USERS
         const usersToUpdate = Object.entries(userPositions);
         const USER_IO_BATCH_SIZE = 20; 
         for (let i = 0; i < usersToUpdate.length; i += USER_IO_BATCH_SIZE) {
@@ -437,6 +450,7 @@ async function closeFrame(closePrice, closeTime) {
                 
                 const rUp = Math.round(pos.up * 10000) / 10000;
                 const rDown = Math.round(pos.down * 10000) / 10000;
+
                 let userDir = "FLAT";
                 if (rUp > rDown) userDir = "UP";
                 else if (rDown > rUp) userDir = "DOWN";
@@ -452,6 +466,21 @@ async function closeFrame(closePrice, closeTime) {
                 await saveUser(pubKey, userData);
             }));
         }
+
+        // DEBUG: LOG TOP 2
+        const frameParticipants = [];
+        for (const [pubKey, pos] of Object.entries(userPositions)) {
+             const rUp = Math.round(pos.up);
+             const rDown = Math.round(pos.down);
+             let dir = rUp > rDown ? 'UP' : (rDown > rUp ? 'DOWN' : 'FLAT');
+             frameParticipants.push({ 
+                key: pubKey.slice(0, 6), shares: Math.max(rUp, rDown), sol: pos.sol, dir: dir 
+            });
+        }
+        frameParticipants.sort((a, b) => b.shares - a.shares);
+        console.log(`> [DEBUG] Frame ${frameId} Results (Top 2):`);
+        if (frameParticipants[0]) console.log(`> 1st: ${frameParticipants[0].key} | ${frameParticipants[0].dir}`);
+        if (frameParticipants[1]) console.log(`> 2nd: ${frameParticipants[1].key} | ${frameParticipants[1].dir}`);
 
         processedSignatures.clear();
         await fs.writeFile(SIGS_FILE, '');
@@ -471,28 +500,21 @@ async function closeFrame(closePrice, closeTime) {
 
 async function updatePrice() {
     try {
-        // --- HELIUS DAS GETASSET ---
-        const response = await axios.post(SOLANA_NETWORK, {
-            jsonrpc: '2.0',
-            id: 'price-check',
-            method: 'getAsset',
-            params: {
-                id: 'So11111111111111111111111111111111111111112' // Wrapped SOL Mint
-            }
-        }, { timeout: 5000 });
-
-        const asset = response.data.result;
+        // ORACLE: PYTH HERMES V2 (JSON)
+        const response = await axios.get(`${PYTH_HERMES_URL}?ids[]=${SOL_FEED_ID}`, {
+            timeout: 5000
+        });
         
-        // EXTRACT PRICE FROM DAS
-        if (asset && asset.token_info && asset.token_info.price_info) {
-            const currentPrice = asset.token_info.price_info.price_per_token;
+        if (response.data && response.data.parsed && response.data.parsed[0]) {
+            const priceData = response.data.parsed[0].price;
+            const currentPrice = Number(priceData.price) * Math.pow(10, priceData.expo);
             
             await stateMutex.runExclusive(async () => {
                 gameState.price = currentPrice;
                 const currentWindowStart = getCurrentWindowStart();
                 
                 if (gameState.isResetting) return;
-
+                
                 if (gameState.isPaused) {
                     if (currentWindowStart > gameState.candleStartTime) {
                         console.log("> [SYS] Unpausing for new Frame.");
@@ -540,7 +562,7 @@ async function updatePrice() {
                 await saveSystemState();
             });
         }
-    } catch (e) { console.log("Oracle unstable:", e.message); }
+    } catch (e) { console.log("Oracle error:", e.message); }
 }
 
 setInterval(updatePrice, 10000); 
@@ -571,6 +593,7 @@ app.get('/api/state', async (req, res) => {
         down5m: getPercentChange(priceDown, fiveMinAgo.down),
     };
     const uniqueUsers = new Set(gameState.bets.map(b => b.user)).size;
+    
     const userKey = req.query.user;
     let myStats = null;
     let activePosition = null;
