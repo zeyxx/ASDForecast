@@ -30,7 +30,7 @@ const FEE_PERCENT = 0.0552;
 const RESERVE_SOL = 0.02;
 const SWEEP_TARGET = 0.05;
 const FRAME_DURATION = 15 * 60 * 1000; 
-const BACKEND_VERSION = "101.1"; // Mainnet + Priority Fees
+const BACKEND_VERSION = "101.2"; // Fee Tracking Fix
 
 // [OPTIMIZATION] Priority Fee (MicroLamports)
 const PRIORITY_FEE_UNITS = 50000; 
@@ -111,7 +111,7 @@ function loadGlobalState() {
         if (fsSync.existsSync(STATE_FILE)) {
             const savedState = JSON.parse(fsSync.readFileSync(STATE_FILE));
             gameState = { ...gameState, ...savedState };
-            gameState.isResetting = false; // Reset lock on boot
+            gameState.isResetting = false; 
             
             if (gameState.candleStartTime > 0) {
                 const currentFrameFile = path.join(FRAMES_DIR, `frame_${gameState.candleStartTime}.json`);
@@ -134,9 +134,7 @@ async function saveSystemState() {
         isPaused: gameState.isPaused,
         isResetting: gameState.isResetting
     });
-    
     await atomicWrite(STATS_FILE, globalStats);
-
     if (gameState.candleStartTime > 0) {
         const frameFile = path.join(FRAMES_DIR, `frame_${gameState.candleStartTime}.json`);
         await atomicWrite(frameFile, {
@@ -200,7 +198,7 @@ function getCurrentWindowStart() {
     return start.getTime();
 }
 
-// --- OPTIMIZED QUEUE PROCESSOR ---
+// --- QUEUE PROCESSOR ---
 async function processPayoutQueue() {
     const release = await payoutMutex.acquire();
     try {
@@ -218,11 +216,7 @@ async function processPayoutQueue() {
             const { type, recipients, frameId } = batch;
             try {
                 const tx = new Transaction();
-                
-                // [OPTIMIZATION] Add Priority Fees
-                const priorityFeeIx = ComputeBudgetProgram.setComputeUnitPrice({
-                    microLamports: PRIORITY_FEE_UNITS 
-                });
+                const priorityFeeIx = ComputeBudgetProgram.setComputeUnitPrice({ microLamports: PRIORITY_FEE_UNITS });
                 tx.add(priorityFeeIx);
 
                 let hasInstructions = false;
@@ -244,19 +238,12 @@ async function processPayoutQueue() {
 
                 if (validRecipients.length > 0) {
                     for (const item of validRecipients) {
-                        tx.add(SystemProgram.transfer({
-                            fromPubkey: houseKeypair.publicKey,
-                            toPubkey: new PublicKey(item.pubKey),
-                            lamports: item.amount
-                        }));
+                        tx.add(SystemProgram.transfer({ fromPubkey: houseKeypair.publicKey, toPubkey: new PublicKey(item.pubKey), lamports: item.amount }));
                         hasInstructions = true;
                     }
 
                     if (hasInstructions) {
-                        const sig = await sendAndConfirmTransaction(connection, tx, [houseKeypair], { 
-                            commitment: 'confirmed',
-                            maxRetries: 5 // [OPTIMIZATION] Retries
-                        });
+                        const sig = await sendAndConfirmTransaction(connection, tx, [houseKeypair], { commitment: 'confirmed', maxRetries: 5 });
                         console.log(`> [QUEUE] Batch Sent: ${sig}`);
 
                         if (type === 'USER_PAYOUT') {
@@ -316,7 +303,6 @@ async function queuePayouts(frameId, result, bets, totalVolume) {
         for (const [pubKey, pos] of Object.entries(userPositions)) {
             const rUp = Math.round(pos.up * 10000) / 10000;
             const rDown = Math.round(pos.down * 10000) / 10000;
-            
             let userDir = "FLAT";
             if (rUp > rDown) userDir = "UP";
             else if (rDown > rUp) userDir = "DOWN";
@@ -330,7 +316,7 @@ async function queuePayouts(frameId, result, bets, totalVolume) {
         }
 
         if (totalWinningShares > 0) {
-            const BATCH_SIZE = 12; // [OPTIMIZATION] Reduced Batch Size
+            const BATCH_SIZE = 12; 
             for (let i = 0; i < eligibleWinners.length; i += BATCH_SIZE) {
                 const batchWinners = eligibleWinners.slice(i, i + BATCH_SIZE);
                 const batchRecipients = [];
@@ -364,8 +350,7 @@ async function processRefunds(frameId, bets) {
     const queue = [];
     if (totalFee > 0) queue.push({ type: 'FEE', recipients: [{ pubKey: FEE_WALLET.toString(), amount: Math.floor(totalFee) }] });
     const recipients = Object.entries(refunds).map(([pub, amt]) => ({ pubKey: pub, amount: amt }));
-    
-    const BATCH_SIZE = 12; // [OPTIMIZATION]
+    const BATCH_SIZE = 12;
     for (let i = 0; i < recipients.length; i += BATCH_SIZE) {
         const batch = recipients.slice(i, i + BATCH_SIZE);
         queue.push({ type: 'USER_REFUND', frameId: frameId, recipients: batch }); 
@@ -393,6 +378,15 @@ async function closeFrame(closePrice, closeTime) {
         const realSharesUp = Math.max(0, gameState.poolShares.up - 50);
         const realSharesDown = Math.max(0, gameState.poolShares.down - 50);
         const frameSol = gameState.bets.reduce((acc, bet) => acc + bet.costSol, 0);
+        
+        // [FIX] Track Lifetime Fees
+        let frameFees = 0;
+        if (result === "FLAT") {
+            frameFees = frameSol * 0.99;
+        } else {
+            frameFees = frameSol * FEE_PERCENT;
+        }
+        globalStats.totalFees += frameFees;
 
         let winnerCount = 0;
         let payoutTotal = 0;
@@ -550,7 +544,6 @@ updatePrice();
 processPayoutQueue();
 
 app.get('/api/state', async (req, res) => {
-    // LOCK-FREE READ
     const now = new Date();
     const nextWindowStart = getCurrentWindowStart() + FRAME_DURATION;
     const msUntilClose = nextWindowStart - now.getTime();
@@ -599,8 +592,6 @@ app.get('/api/state', async (req, res) => {
 
 app.post('/api/verify-bet', async (req, res) => {
     if (gameState.isPaused) return res.status(400).json({ error: "MARKET_PAUSED" });
-    if (gameState.isResetting) return res.status(503).json({ error: "CALCULATING_RESULTS" });
-
     const { signature, direction, userPubKey } = req.body;
     if (!signature || !userPubKey) return res.status(400).json({ error: "MISSING_DATA" });
     if (processedSignatures.has(signature)) return res.status(400).json({ error: "DUPLICATE_TX_DETECTED" });
