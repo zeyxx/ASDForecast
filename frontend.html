@@ -1,4 +1,4 @@
-<!-- ASDForecast v110.1 // HOTFIX: REMOVED GHOST STATS ELEMENTS -->
+<!-- ASDForecast v111.0 // MASTER MERGE: 6-GRID STATS & SOLSCAN LINK -->
 
 <!-- Dependencies -->
 <script src="https://cdn.tailwindcss.com"></script>
@@ -134,7 +134,6 @@
                             <span class="text-[10px] text-orange-400 uppercase block tracking-widest opacity-70">Current Frame Pot</span>
                             <span id="current-pot" class="text-lg font-mono font-bold text-white">0.000 SOL</span>
                         </div>
-                        <!-- UPDATE: Added Active Wallets Count -->
                         <div class="text-xs text-orange-500/70 font-mono" id="frame-users-container">
                             (👤 <span id="frame-users">0</span>)
                         </div>
@@ -208,14 +207,22 @@
 
         <!-- STATS -->
         <div class="panel p-4 bg-black/40 mb-8">
-            <div class="flex flex-col sm:flex-row justify-between items-center text-center sm:text-left gap-4">
-                <div><h3 class="text-xs font-bold text-orange-500 uppercase tracking-wider mb-1">Global Damage Report</h3><p class="text-[10px] text-orange-300/60 font-mono">Updates Live</p></div>
-                <div class="flex gap-8">
-                    <!-- UPDATE: New Global Stats Fields -->
-                    <div><span class="block text-[10px] text-orange-400 font-mono uppercase">Last Payout</span><span id="global-last-payout" class="text-xl font-bold font-mono text-white">--</span></div>
-                    <div><span class="block text-[10px] text-orange-400 font-mono uppercase">Total Winnings</span><span id="global-winnings" class="text-xl font-bold font-mono text-green-400">0.00 SOL</span></div>
-                    <div><span class="block text-[10px] text-orange-400 font-mono uppercase">Lifetime Degens</span><span id="global-lifetime-users" class="text-xl font-bold font-mono text-yellow-400">0</span></div>
+            <h3 class="text-xs font-bold text-orange-500 uppercase tracking-wider mb-2">Global Damage Report</h3>
+            <!-- UPDATE: 6-Grid Layout for Stats -->
+            <div class="grid grid-cols-2 md:grid-cols-3 gap-6 text-center md:text-left">
+                <!-- ROW 1 -->
+                <div><span class="block text-[10px] text-orange-400 font-mono uppercase">Total Volume</span><span id="global-vol" class="text-xl font-bold font-mono text-white">0.00 SOL</span></div>
+                <div><span class="block text-[10px] text-orange-400 font-mono uppercase">Ash Pile (Fees)</span><span id="global-fees" class="text-xl font-bold font-mono text-red-400">0.00 SOL</span></div>
+                <div><span class="block text-[10px] text-orange-400 font-mono uppercase">ASDF Purchased</span><span id="global-asdf" class="text-xl font-bold font-mono text-yellow-400">0 ASDF</span></div>
+                
+                <!-- ROW 2 -->
+                <div>
+                    <span class="block text-[10px] text-orange-400 font-mono uppercase">Last Payout</span>
+                    <!-- UPDATE: Link to Solscan -->
+                    <a id="link-last-payout" href="https://solscan.io/account/BXSp5y6Ua6tB5fZDe1EscVaaEaZLg1yqzrsPqAXhKJYy" target="_blank" class="text-xl font-bold font-mono text-white hover:text-orange-400 transition-colors underline decoration-dotted decoration-orange-900" title="Verify on Solscan">--</a>
                 </div>
+                <div><span class="block text-[10px] text-orange-400 font-mono uppercase">Total Winnings</span><span id="global-winnings" class="text-xl font-bold font-mono text-green-400">0.00 SOL</span></div>
+                <div><span class="block text-[10px] text-orange-400 font-mono uppercase">Lifetime Degens</span><span id="global-lifetime-users" class="text-xl font-bold font-mono text-yellow-400">0</span></div>
             </div>
         </div>
 
@@ -251,7 +258,7 @@
                 <div class="mt-6 border-t-2 border-red-900/50 pt-4 bg-red-900/10 p-4 rounded"><strong class="text-red-500 block mb-1 text-lg">⚠️ DISCLAIMER & RISK WARNING</strong><p class="text-xs text-orange-200 leading-relaxed">This platform is currently LIVE on Solana Mainnet. The operators are not responsible for lost funds, smart contract errors, oracle latency, or network failures. <br><br><strong>PREDICT RESPONSIBLY:</strong> Never wager funds you cannot afford to lose. This is an experimental technology demonstration.</p></div>
             </div>
         </div>
-        <div class="text-center text-xs text-gray-500 font-mono pt-2 border-t border-orange-900/50"><span class="text-orange-400">Frontend v110.1</span> | Backend <span id="backend-version">v---</span></div>
+        <div class="text-center text-xs text-gray-500 font-mono pt-2 border-t border-orange-900/50"><span class="text-orange-400">Frontend v111.0</span> | Backend <span id="backend-version">v---</span></div>
     </div>
 
     <!-- SHARE MODAL -->
@@ -308,7 +315,11 @@
             statActUp: document.getElementById('stat-active-up'), statActDown: document.getElementById('stat-active-down'),
             statPayout: document.getElementById('stat-payout'), lastFrameStats: document.getElementById('last-frame-stats'),
             aboutContent: document.getElementById('about-content'), aboutIcon: document.getElementById('about-icon'),
-            // REMOVED: Dead IDs statGlobalVol, statGlobalFees, statGlobalASDF
+            // RESTORED IDs
+            statGlobalVol: document.getElementById('global-vol'), 
+            statGlobalFees: document.getElementById('global-fees'), 
+            statGlobalASDF: document.getElementById('global-asdf'),
+            
             topStatus: document.getElementById('top-status-indicator'), ticker: document.getElementById('ticker-content'),
             lastUpdated: document.getElementById('last-updated'), netSharesHeader: document.getElementById('net-shares-header'),
             btnUp: document.getElementById('btn-buy-up'), btnDown: document.getElementById('btn-buy-down'),
@@ -317,12 +328,12 @@
             backendVersion: document.getElementById('backend-version'), statusDot: document.getElementById('status-dot'),
             pauseText: document.querySelector('#pause-overlay span:nth-child(2)'),
             leaderboardRows: document.getElementById('leaderboard-rows'),
+            
             // NEW UI ELEMENTS
             frameUsers: document.getElementById('frame-users'),
-            globalLastPayout: document.getElementById('global-last-payout'),
+            globalLastPayout: document.getElementById('link-last-payout'), // Changed ID to target anchor tag
             globalWinnings: document.getElementById('global-winnings'),
-            globalLifetimeUsers: document.getElementById('global-lifetime-users'),
-            statGlobalVol: document.getElementById('global-vol') // Keeping this but note: global-vol might be missing in updated HTML if not careful
+            globalLifetimeUsers: document.getElementById('global-lifetime-users')
         };
 
         if(ui.btnInc) ui.btnInc.onclick = () => adjustQty(1);
@@ -645,7 +656,10 @@
                 
                 // UPDATE: Fill new stats fields
                 if(data.platformStats) {
-                    // Removed old references to deleted elements to prevent crash
+                    // RESTORED OLD STATS (Fixes Ghost Element Bug)
+                    if (ui.statGlobalVol) ui.statGlobalVol.innerText = `${data.platformStats.totalVolume.toFixed(2)} SOL`;
+                    if (ui.statGlobalFees) ui.statGlobalFees.innerText = `${data.platformStats.totalFees.toFixed(3)} SOL`;
+                    if (ui.statGlobalASDF && data.platformStats.totalASDF) ui.statGlobalASDF.innerText = Math.round(data.platformStats.totalASDF).toLocaleString() + " ASDF";
                 }
                 
                 // New Fields
@@ -655,6 +669,7 @@
                 
                 if (data.lastFramePot !== undefined) {
                     const statusIcon = data.payoutQueueLength === 0 ? "✅" : "⏳";
+                    // Using innerText preserves the styling of the anchor tag
                     ui.globalLastPayout.innerText = `${statusIcon} ${data.lastFramePot.toFixed(2)} SOL`;
                 }
 
