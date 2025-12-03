@@ -1,4 +1,4 @@
-<!-- ASDForecast v100.3 // MAINNET HELIUS INTEGRATION -->
+<!-- ASDForecast v103.2 // MASTER MERGE: SHARE, CONTENT, RPC, STABILITY -->
 
 <!-- Dependencies -->
 <script src="https://cdn.tailwindcss.com"></script>
@@ -11,7 +11,7 @@
         font-family: 'Comic Neue', cursive; 
         background-color: #451a03; 
         color: #ffedd5;
-        min-height: 1700px;
+        min-height: 1950px;
         position: relative;
         border: 6px solid #7c2d12;
         border-radius: 16px;
@@ -26,23 +26,8 @@
         box-shadow: 4px 4px 0 #9a3412;
     }
 
-    .ticker-wrap {
-        width: 100%;
-        background-color: #2a1005;
-        border-bottom: 2px solid #7c2d12;
-        overflow: hidden;
-        white-space: nowrap;
-        height: 32px;
-        display: flex;
-        align-items: center;
-    }
-    .ticker {
-        display: inline-block;
-        padding-left: 100%;
-        animation: marquee 27s linear infinite;
-        font-family: 'JetBrains Mono', monospace;
-        font-size: 12px;
-    }
+    .ticker-wrap { width: 100%; background-color: #2a1005; border-bottom: 2px solid #7c2d12; overflow: hidden; white-space: nowrap; height: 32px; display: flex; align-items: center; }
+    .ticker { display: inline-block; padding-left: 100%; animation: marquee 27s linear infinite; font-family: 'JetBrains Mono', monospace; font-size: 12px; }
     .ticker-wrap:hover .ticker { animation-duration: 54s; }
     .ticker-item { display: inline-block; padding: 0 20px; color: #fb923c; }
     @keyframes marquee { 0% { transform: translate(0, 0); } 100% { transform: translate(-100%, 0); } }
@@ -64,6 +49,11 @@
     .btn-up:hover:not(:disabled) { background: #166534; }
     .btn-down { background: #7f1d1d; border-color: #ef4444; color: #fca5a5; }
     .btn-down:hover:not(:disabled) { background: #991b1b; }
+
+    /* MODAL STYLES */
+    #share-modal { backdrop-filter: blur(5px); }
+    .share-card { background: #1a0f0a; border: 2px solid #ea580c; padding: 20px; border-radius: 12px; max-width: 90%; width: 500px; text-align: center; }
+    #share-preview { width: 100%; border-radius: 8px; border: 2px solid #7c2d12; margin-bottom: 15px; }
 
     #wallet-modal { z-index: 9999; }
     
@@ -94,7 +84,7 @@
                         <span id="status-dot" class="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span>
                         <span id="status-text">OFFLINE</span>
                     </div>
-                    <div id="last-updated" class="text-[10px] font-mono text-orange-500/50 mt-1 mr-1">Last Update: --:--:--</div>
+                    <div id="last-updated" class="text-[10px] font-mono text-orange-500/50 mt-1 mr-1">Price Data: --:--:--</div>
                 </div>
                 <button id="connect-btn" class="bg-orange-600 border-2 border-orange-800 text-white px-6 py-2 rounded shadow-lg font-bold hover:bg-orange-500">Connect Phantom</button>
             </div>
@@ -149,11 +139,10 @@
                     <!-- SCROLLABLE CONTAINER -->
                     <div id="history-container" class="history-collapsed">
                         <table class="w-full text-sm font-mono text-left">
-                            <thead class="text-orange-500 border-b border-orange-900/50 sticky top-0 bg-[#1d120e] z-10"><tr><th class="pb-2">Time (UTC)</th><th class="pb-2">Result</th><th class="pb-2">Open</th><th class="pb-2">Close</th><th class="pb-2">Volume</th><th class="pb-2">Your Status</th></tr></thead>
+                            <thead class="text-orange-500 border-b border-orange-900/50 sticky top-0 bg-[#1d120e] z-10"><tr><th class="pb-2">Time</th><th class="pb-2">Result</th><th class="pb-2">Open</th><th class="pb-2">Close</th><th class="pb-2">Volume</th><th class="pb-2">Your Status</th></tr></thead>
                             <tbody id="history-rows" class="text-orange-200/80"><tr><td colspan="6" class="py-2 italic opacity-50">Waiting for first frame close...</td></tr></tbody>
                         </table>
                     </div>
-                    
                     <button id="btn-expand-history" onclick="window.toggleHistory()" class="w-full py-2 text-xs text-orange-500/50 hover:text-orange-500 hover:bg-orange-900/20 mt-2 font-mono border-t border-dashed border-orange-900/30 transition-colors hidden">[ + ] EXPAND / COLLAPSE (LAST 50)</button>
                 </div>
             </div>
@@ -165,25 +154,34 @@
                         <div class="flex justify-between items-center text-xs text-orange-400 font-mono mb-1"><span>AVAILABLE BALANCE</span><div class="flex items-center gap-3"><button id="disconnect-btn" class="text-red-500 hover:text-red-400 underline hidden font-bold">[ DISCONNECT ]</button><button onclick="refreshBalance()" class="hover:text-white" title="Refresh">↻</button></div></div>
                         <div class="text-2xl font-mono font-bold text-white mb-4"><span id="balance">0.0000</span> SOL</div>
 
+                        <!-- USER STATS & SHARE -->
                         <div id="user-stats-container" class="hidden space-y-3">
-                            <div class="grid grid-cols-2 gap-2 text-xs font-mono bg-black/30 p-2 rounded"><div><span class="text-orange-500 block">WIN RATE</span><span id="stat-winrate" class="text-white font-bold text-lg">0%</span></div><div><span class="text-orange-500 block">TOTAL WAGERED</span><span id="stat-volume" class="text-white font-bold text-lg">0 SOL</span></div></div>
+                            <div class="flex gap-2">
+                                <div class="grid grid-cols-2 gap-2 text-xs font-mono bg-black/30 p-2 rounded flex-grow">
+                                    <div><span class="text-orange-500 block">WIN RATE</span><span id="stat-winrate" class="text-white font-bold text-lg">0%</span></div>
+                                    <div><span class="text-orange-500 block">TOTAL WAGERED</span><span id="stat-volume" class="text-white font-bold text-lg">0 SOL</span></div>
+                                </div>
+                                <button onclick="openShareModal()" class="bg-blue-900/50 border border-blue-500/50 text-blue-200 px-3 rounded hover:bg-blue-800 transition-colors text-xs font-bold flex flex-col items-center justify-center">
+                                    <span>📸</span>SHARE
+                                </button>
+                            </div>
                             
                             <div class="bg-orange-900/20 p-2 rounded border border-orange-500/30 text-xs font-mono">
                                 <span class="text-orange-400 block mb-1 uppercase tracking-wider">Current Frame Position</span>
                                 <div class="flex justify-between mb-1">
-                                    <span class="text-green-400">UP: <span id="stat-active-up">0</span> <span class="text-gray-500">(0.00 SOL)</span></span>
-                                    <span class="text-red-400">DOWN: <span id="stat-active-down">0</span> <span class="text-gray-500">(0.00 SOL)</span></span>
+                                    <!-- FIXED FORMAT -->
+                                    <span class="text-green-400">UP: <span id="stat-active-up">0 <span class="text-gray-500">(0.00 SOL)</span></span></span>
+                                    <span class="text-red-400">DOWN: <span id="stat-active-down">0 <span class="text-gray-500">(0.00 SOL)</span></span></span>
                                 </div>
                                 <div class="flex justify-between items-center border-t border-orange-500/20 pt-1 mt-1"><span class="text-orange-300/70">Est. Win Payout:</span><span id="stat-payout" class="text-yellow-400 font-bold">0.00 SOL</span></div>
                             </div>
-                            
                             <div class="bg-black/50 p-2 rounded border border-orange-900/50 text-xs font-mono"><span class="text-gray-400 block mb-1 uppercase tracking-wider text-[10px]">Last Frame Performance</span><div id="last-frame-stats" class="text-orange-200">Waiting for close...</div></div>
                         </div>
                     </div>
 
                     <!-- ORDER FORM -->
                     <div id="order-form" class="opacity-50 pointer-events-none relative">
-                        <div id="pause-overlay" class="hidden absolute inset-0 bg-black/80 z-50 flex flex-col items-center justify-center text-center rounded"><span class="text-3xl">🛑</span><span class="text-red-500 font-bold text-xl">MARKET PAUSED</span><span class="text-xs text-orange-300 mt-2">Maintenance / Refund Mode</span></div>
+                        <div id="pause-overlay" class="hidden absolute inset-0 bg-black/80 z-50 flex flex-col items-center justify-center text-center rounded"><span class="text-3xl">🛑</span><span id="pause-text" class="text-red-500 font-bold text-xl">MARKET PAUSED</span><span class="text-xs text-orange-300 mt-2">Maintenance / Refund Mode</span></div>
                         <h2 class="text-xl font-bold text-white mb-4">Fuel the Fire</h2>
                         <div class="mb-6">
                             <label class="block text-xs font-bold text-orange-500 uppercase mb-2">Kindling (Shares)</label>
@@ -214,101 +212,63 @@
             </div>
         </div>
 
+        <!-- LEADERBOARD -->
+        <div class="panel p-6 bg-black/40 mb-8">
+            <h3 class="text-lg font-bold text-white mb-4">🏆 Top 5 Degens</h3>
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm font-mono text-left">
+                    <thead class="text-orange-500 border-b border-orange-900/50">
+                        <tr>
+                            <th class="pb-2">User</th>
+                            <th class="pb-2 text-right">Bets</th>
+                            <th class="pb-2 text-right">Win %</th>
+                            <th class="pb-2 text-right">Total Won</th>
+                        </tr>
+                    </thead>
+                    <tbody id="leaderboard-rows" class="text-orange-200/80">
+                        <tr><td colspan="4" class="py-2 italic opacity-50 text-center">Loading Leaderboard...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
         <!-- ABOUT SECTION (FULLY EXPANDED) -->
         <div class="panel p-6 bg-black/40">
             <button onclick="window.toggleAbout()" class="w-full text-left flex justify-between items-center text-orange-400 hover:text-white transition-colors"><span class="font-bold text-lg font-mono">>> METHODOLOGY & MECHANICS</span><span id="about-icon">[ + ]</span></button>
             <div id="about-content" class="hidden mt-4 text-sm text-orange-200/80 font-mono space-y-6 border-t border-orange-900/50 pt-4">
+                <div><strong class="text-white block mb-1 text-base border-l-4 border-orange-500 pl-2">1. OBJECTIVE</strong><p class="leading-relaxed">The room is on fire. The price of Solana is moving. Predict if the candle will close <strong>HIGHER (This is Fine)</strong> or <strong>LOWER (It Burns)</strong> relative to the start of the 15-minute frame. Frames are aligned to the blockchain timestamp and operate in a continuous 15-minute cycle. The "Open Price" is locked exactly at the start of the frame, and the "Close Price" is determined at the moment the frame ends.</p></div>
+                <div><strong class="text-white block mb-1 text-base border-l-4 border-orange-500 pl-2">2. MECHANICS</strong><p class="mb-2 leading-relaxed">This is a peer-to-peer parimutuel market. There is no "House" taking the other side of your bet; you are betting against other users. Winners divide the losers' money proportionally.</p><ul class="list-disc list-inside ml-2 space-y-2 text-orange-100/80"><li><strong>Shares:</strong> You buy "Shares" of a direction (UP or DOWN). One Share represents a claim on a portion of the final pot.</li><li><strong>Dynamic Pricing:</strong> The cost of 1 Share is not fixed. It fluctuates based on the ratio of money in the UP pool vs the DOWN pool. If 90% of the money is on UP, UP shares are expensive (low reward), and DOWN shares are cheap (high reward).</li><li><strong>No Odds Until Close:</strong> Unlike fixed-odds betting, your final payout multiplier is determined by the pool state at the moment the frame closes.</li></ul></div>
+                <div><strong class="text-white block mb-1 text-base border-l-4 border-orange-500 pl-2">3. PRICING FORMULA</strong><p class="mb-2">The system maintains a constant invariant: <code>Price(UP) + Price(DOWN) = 0.1 SOL</code>.</p><div class="bg-black/50 p-3 rounded border border-orange-900/50 font-mono text-xs text-green-400">Share Price = (Liquidity_In_Direction / Total_Liquidity) * 0.1</div><p class="mt-2 text-xs text-gray-500">Note: A small virtual liquidity buffer (50 shares) is applied to both sides at the start of a frame to prevent infinite price swings on the very first bet.</p></div>
+                <div><strong class="text-white block mb-1 text-base border-l-4 border-orange-500 pl-2">4. PAYOUTS & FEES</strong><ul class="list-disc list-inside ml-2 space-y-2 text-orange-100/80 text-xs"><li><strong>THE ASH PILE (FEES):</strong> 5.52% of the Total Volume (all wagers combined) is deducted automatically. This revenue is sent to the Fee Wallet to buy back and burn <strong>$ASDFASDFA</strong>.</li><li><strong>House Reserve:</strong> 0.48% is retained to cover Solana network rent and transaction gas fees.</li><li><strong>The Winner's Pot:</strong> The remaining 94% of the Total Volume is the pot.</li><li><strong>Distribution:</strong> the pot is then distributed to winners divided among them based on how many shares they own, proportional to the total amount of winning shares.</li><li class="text-red-400"><strong>TOTAL MELTDOWN (FLAT MARKET):</strong> If the Open Price and Close Price are identical (0.00% Change), nobody wins. The house burns down. 99% of the pot is sent to the incinerator (Fee Wallet).</li><li class="text-red-400"><strong>THE HEDGE PARADOX:</strong> If you hold an exact equal amount of UP and DOWN shares (a flat position), you have signaled no conviction. The system treats this as a LOSS, regardless of the outcome. You will receive 0 payout.</li></ul></div>
+                <div><strong class="text-white block mb-1 text-base border-l-4 border-orange-500 pl-2">5. SCENARIOS</strong><div class="space-y-3 text-xs mt-2"><div class="bg-black/30 p-3 rounded border-l-2 border-green-500"><span class="text-green-400 font-bold block mb-1">Scenario A: The Crowd Follower (Consensus)</span><p class="opacity-80"><strong>The Situation:</strong> The market is bullish. 90 SOL is on UP, 10 SOL is on DOWN.<br><strong>Your Bet:</strong> You bet 1 SOL on UP.<br><strong>The Outcome:</strong> UP Wins.<br><strong>The Math:</strong> The Pot is ~94 SOL. You own roughly 1.1% of the winning pool.<br><strong>Result:</strong> You receive ~1.04 SOL back. A small, safe 4% profit.</p></div><div class="bg-black/30 p-3 rounded border-l-2 border-yellow-500"><span class="text-yellow-400 font-bold block mb-1">Scenario B: The Contrarian (Longshot)</span><p class="opacity-80"><strong>The Situation:</strong> The market is bullish (90 SOL UP vs 10 SOL DOWN).<br><strong>Your Bet:</strong> You bet 1 SOL on DOWN (The Underdog).<br><strong>The Outcome:</strong> DOWN Wins.<br><strong>The Math:</strong> The Pot is ~94 SOL. You own roughly 10% of the winning pool (since the pool is small).<br><strong>Result:</strong> You receive ~9.40 SOL back. A massive 840% profit for betting against the crowd.</p></div></div></div>
                 
-                <!-- 1. OBJECTIVE -->
-                <div>
-                    <strong class="text-white block mb-1 text-base border-l-4 border-orange-500 pl-2">1. OBJECTIVE</strong>
-                    <p class="leading-relaxed">The room is on fire. The price of Solana is moving. Predict if the candle will close <strong>HIGHER (This is Fine)</strong> or <strong>LOWER (It Burns)</strong> relative to the start of the 15-minute frame. Frames are aligned to the blockchain timestamp and operate in a continuous 15-minute cycle. The "Open Price" is locked exactly at the start of the frame, and the "Close Price" is determined at the moment the frame ends.</p>
-                </div>
-                
-                <!-- 2. MECHANICS -->
-                <div>
-                    <strong class="text-white block mb-1 text-base border-l-4 border-orange-500 pl-2">2. PARIMUTUEL MECHANICS</strong>
-                    <p class="mb-2 leading-relaxed">This is a peer-to-peer parimutuel market. There is no "House" taking the other side of your bet; you are betting against other users. Winners divide the losers' money proportionally.</p>
-                    <ul class="list-disc list-inside ml-2 space-y-2 text-orange-100/80">
-                        <li><strong>Shares:</strong> You buy "Shares" of a direction (UP or DOWN). One Share represents a claim on a portion of the final pot.</li>
-                        <li><strong>Dynamic Pricing:</strong> The cost of 1 Share is not fixed. It fluctuates based on the ratio of money in the UP pool vs the DOWN pool. If 90% of the money is on UP, UP shares are expensive (low reward), and DOWN shares are cheap (high reward).</li>
-                        <li><strong>No Odds Until Close:</strong> Unlike fixed-odds betting, your final payout multiplier is determined by the pool state at the moment the frame closes.</li>
-                    </ul>
-                </div>
-
-                <!-- 3. PRICING -->
-                <div>
-                    <strong class="text-white block mb-1 text-base border-l-4 border-orange-500 pl-2">3. PRICING FORMULA</strong>
-                    <p class="mb-2">The system maintains a constant invariant: <code>Price(UP) + Price(DOWN) = 0.1 SOL</code>.</p>
-                    <div class="bg-black/50 p-3 rounded border border-orange-900/50 font-mono text-xs text-green-400">
-                        Share Price = (Liquidity_In_Direction / Total_Liquidity) * 0.1
-                    </div>
-                    <p class="mt-2 text-xs text-gray-500">Note: A small virtual liquidity buffer (50 shares) is applied to both sides at the start of a frame to prevent infinite price swings on the very first bet.</p>
-                </div>
-
-                <!-- 4. PAYOUTS -->
-                <div>
-                    <strong class="text-white block mb-1 text-base border-l-4 border-orange-500 pl-2">4. PAYOUTS & FEES</strong>
-                    <ul class="list-disc list-inside ml-2 space-y-2 text-orange-100/80 text-xs">
-                        <li><strong>THE ASH PILE (FEES):</strong> 5.52% of the Total Volume (all wagers combined) is deducted automatically. This revenue is sent to the Fee Wallet to buy back and burn <strong>$ASDFASDFA</strong>.</li>
-                        <li><strong>House Reserve:</strong> 0.48% is retained to cover Solana network rent and transaction gas fees.</li>
-                        <li><strong>The Winner's Pot:</strong> The remaining 94% of the Total Volume is the pot.</li>
-                        <li><strong>Distribution:</strong> the pot is then distributed to winners divided among them based on how many shares they own, proportional to the total amount of winning shares.</li>
-                        <li class="text-red-400"><strong>TOTAL MELTDOWN (FLAT MARKET):</strong> If the Open Price and Close Price are identical (0.00% Change), nobody wins. The house burns down. 99% of the pot is sent to the incinerator (Fee Wallet).</li>
-                        <li class="text-red-400"><strong>THE HEDGE PARADOX:</strong> If you hold an exact equal amount of UP and DOWN shares (a flat position), you have signaled no conviction. The system treats this as a LOSS, regardless of the outcome. You will receive 0 payout.</li>
-                    </ul>
-                </div>
-
-                <!-- 5. SCENARIOS -->
-                <div>
-                    <strong class="text-white block mb-1 text-base border-l-4 border-orange-500 pl-2">5. PAYOUT SCENARIOS (EXAMPLES)</strong>
-                    <div class="space-y-3 text-xs mt-2">
-                        <div class="bg-black/30 p-3 rounded border-l-2 border-green-500">
-                            <span class="text-green-400 font-bold block mb-1">Scenario A: The Crowd Follower (Consensus)</span>
-                            <p class="opacity-80">
-                                <strong>The Situation:</strong> The market is bullish. 90 SOL is on UP, 10 SOL is on DOWN.<br>
-                                <strong>Your Bet:</strong> You bet 1 SOL on UP.<br>
-                                <strong>The Outcome:</strong> UP Wins.<br>
-                                <strong>The Math:</strong> The Pot is ~94 SOL. You own roughly 1.1% of the winning pool.<br>
-                                <strong>Result:</strong> You receive ~1.04 SOL back. A small, safe 4% profit.
-                            </p>
-                        </div>
-                        <div class="bg-black/30 p-3 rounded border-l-2 border-yellow-500">
-                            <span class="text-yellow-400 font-bold block mb-1">Scenario B: The Contrarian (Longshot)</span>
-                            <p class="opacity-80">
-                                <strong>The Situation:</strong> The market is bullish (90 SOL UP vs 10 SOL DOWN).<br>
-                                <strong>Your Bet:</strong> You bet 1 SOL on DOWN (The Underdog).<br>
-                                <strong>The Outcome:</strong> DOWN Wins.<br>
-                                <strong>The Math:</strong> The Pot is ~94 SOL. You own roughly 10% of the winning pool (since the pool is small).<br>
-                                <strong>Result:</strong> You receive ~9.40 SOL back. A massive 840% profit for betting against the crowd.
-                            </p>
-                        </div>
-                    </div>
-                </div>
-                
-                <!-- DISCLAIMER -->
-                <div class="mt-6 border-t-2 border-red-900/50 pt-4 bg-red-900/10 p-4 rounded">
-                    <strong class="text-red-500 block mb-1 text-lg">⚠️ DISCLAIMER & RISK WARNING</strong>
-                    <p class="text-xs text-orange-200 leading-relaxed">
-                        This platform is currently LIVE on Solana Mainnet. The operators are not responsible for lost funds, smart contract errors, oracle latency, or network failures.
-                        <br><br>
-                        <strong>PREDICT RESPONSIBLY:</strong> Never wager funds you cannot afford to lose. This is an experimental technology demonstration.
-                    </p>
-                </div>
+                <div class="mt-6 border-t-2 border-red-900/50 pt-4 bg-red-900/10 p-4 rounded"><strong class="text-red-500 block mb-1 text-lg">⚠️ DISCLAIMER & RISK WARNING</strong><p class="text-xs text-orange-200 leading-relaxed">This platform is currently LIVE on Solana Mainnet. The operators are not responsible for lost funds, smart contract errors, oracle latency, or network failures. <br><br><strong>PREDICT RESPONSIBLY:</strong> Never wager funds you cannot afford to lose. This is an experimental technology demonstration.</p></div>
             </div>
         </div>
-        <div class="text-center text-xs text-gray-500 font-mono pt-2 border-t border-orange-900/50"><span class="text-orange-400">Frontend v100.3</span> | Backend <span id="backend-version">v---</span></div>
+        <div class="text-center text-xs text-gray-500 font-mono pt-2 border-t border-orange-900/50"><span class="text-orange-400">Frontend v103.2</span> | Backend <span id="backend-version">v---</span></div>
+    </div>
+
+    <!-- SHARE MODAL -->
+    <div id="share-modal" class="fixed inset-0 z-50 hidden flex items-center justify-center bg-black/60">
+        <div class="share-card relative">
+            <button onclick="document.getElementById('share-modal').classList.add('hidden')" class="absolute top-2 right-3 text-gray-400 hover:text-white">✕</button>
+            <h2 class="text-xl font-bold text-orange-500 mb-4">FLEX YOUR DEGEN STATS</h2>
+            <img id="share-preview" src="" alt="Stats Card">
+            <div class="flex gap-2 mt-4">
+                <button onclick="downloadShareImage()" class="flex-1 bg-orange-600 text-white py-3 rounded font-bold hover:bg-orange-500 shadow-lg">DOWNLOAD 💾</button>
+                <button onclick="shareToTwitter()" class="flex-1 bg-black border border-white text-white py-3 rounded font-bold hover:bg-gray-900 shadow-lg">POST TO 𝕏</button>
+            </div>
+        </div>
     </div>
 </div>
 
 <script>
-    // --- CRITICAL CONFIGURATION ---
     const HOUSE_PUBKEY = "BXSp5y6Ua6tB5fZDe1EscVaaEaZLg1yqzrsPqAXhKJYy"; // MAINNET WALLET
     const API_URL = 'https://asdforecast.onrender.com/api'; 
-    const HELIUS_RPC_URL = "https://mainnet.helius-rpc.com/?api-key=3ce79dab-c031-4ebe-a060-edc91bf0edee"; // Frontend-Specific RPC
+    const HELIUS_RPC_URL = "https://mainnet.helius-rpc.com/?api-key=3ce79dab-c031-4ebe-a060-edc91bf0edee";
     
     let PublicKey, SystemProgram, Transaction;
-    let state = { pubKey: null, prices: { up: 0.05, down: 0.05 }, conn: null, fullHistory: [], lastFrameId: null, userLog: {}, isHistoryExpanded: false, isAboutExpanded: false, isOnline: false, targetEndTime: null };
+    let state = { pubKey: null, prices: { up: 0.05, down: 0.05 }, conn: null, fullHistory: [], lastFrameId: null, userLog: {}, isHistoryExpanded: false, isAboutExpanded: false, isOnline: false, targetEndTime: null, isResetting: false, isCancelled: false, baseImageSrc: null };
     let ui = {};
 
     window.addEventListener('load', () => {
@@ -316,8 +276,7 @@
             PublicKey = solanaWeb3.PublicKey;
             SystemProgram = solanaWeb3.SystemProgram;
             Transaction = solanaWeb3.Transaction;
-            
-            // FIX: Use Helius RPC for the browser connection to bypass 403 errors
+            // FIXED: Use Helius RPC for the browser connection to bypass 403 errors
             state.conn = new solanaWeb3.Connection(HELIUS_RPC_URL, {
                 commitment: 'confirmed',
                 confirmTransactionInitialTimeout: 60000
@@ -346,10 +305,11 @@
             btnUp: document.getElementById('btn-buy-up'), btnDown: document.getElementById('btn-buy-down'),
             btnInc: document.getElementById('btn-inc'), btnDec: document.getElementById('btn-dec'),
             pauseOverlay: document.getElementById('pause-overlay'), statusText: document.getElementById('status-text'),
-            backendVersion: document.getElementById('backend-version'), statusDot: document.getElementById('status-dot')
+            backendVersion: document.getElementById('backend-version'), statusDot: document.getElementById('status-dot'),
+            pauseText: document.querySelector('#pause-overlay span:nth-child(2)'),
+            leaderboardRows: document.getElementById('leaderboard-rows')
         };
 
-        // Manual listeners
         if(ui.btnInc) ui.btnInc.onclick = () => adjustQty(1);
         if(ui.btnDec) ui.btnDec.onclick = () => adjustQty(-1);
 
@@ -364,6 +324,9 @@
     });
 
     function updateTimer() {
+        if (state.isResetting) { if(ui.timer) ui.timer.innerText = "Resetting..."; return; }
+        // LOCAL LOCKDOWN CHECK
+        if (state.targetEndTime && state.targetEndTime <= Date.now() + 500) { if(ui.timer) ui.timer.innerText = "Calculating..."; return; }
         if (!state.targetEndTime) return;
         const now = Date.now();
         let diff = state.targetEndTime - now;
@@ -375,7 +338,6 @@
 
     function formatChange(el, val) { if (!val) val = 0; const sign = val >= 0 ? '+' : ''; const color = val > 0 ? 'text-green-400' : (val < 0 ? 'text-red-400' : 'text-gray-400'); el.innerHTML = `<span class="${color}">${sign}${val.toFixed(2)}%</span>`; }
     
-    // GLOBAL SCOPE FOR ONCLICK
     window.toggleHistory = function() {
         state.isHistoryExpanded = !state.isHistoryExpanded;
         const container = ui.historyContainer;
@@ -409,9 +371,91 @@
     function adjustQty(n) { if(ui.qty.disabled) return; let v = parseInt(ui.qty.value) + n; if(v < 1) v = 1; ui.qty.value = Math.floor(v); updateCosts(); }
     function updateCosts() { const q = parseInt(ui.qty.value) || 0; if(state.prices.up && ui.costUp) { ui.costUp.innerText = (q * state.prices.up).toFixed(3) + " SOL"; ui.costDown.innerText = (q * state.prices.down).toFixed(3) + " SOL"; } }
 
+    // --- SHARE STATS LOGIC ---
+    window.openShareModal = function() {
+        const canvas = document.createElement('canvas');
+        canvas.width = 800; canvas.height = 400;
+        const ctx = canvas.getContext('2d');
+        
+        const drawContent = () => {
+             const grd = ctx.createLinearGradient(0, 0, 0, 400);
+             grd.addColorStop(0, "#451a03"); grd.addColorStop(1, "#ea580c");
+             ctx.fillStyle = grd; ctx.fillRect(0, 0, 800, 400);
+
+             ctx.font = "bold 40px monospace"; ctx.fillStyle = "white"; ctx.fillText("ASDForecast", 40, 60);
+             ctx.font = "20px monospace"; ctx.fillStyle = "#fb923c"; ctx.fillText("15m Binary Prediction Market", 40, 90);
+
+             let totalWon = 0;
+             let rate = "0%";
+             let wins = 0;
+             let total = 0;
+             let vol = "0 SOL";
+
+             if (state.userLog) {
+                 wins = parseInt(document.getElementById('stat-winrate').innerText.split('(')[1]) || 0;
+                 total = parseInt(document.getElementById('stat-winrate').innerText.split('/')[1]) || 0;
+                 rate = document.getElementById('stat-winrate').innerText.split('%')[0] + "%";
+                 vol = document.getElementById('stat-volume').innerText;
+                 Object.values(state.userLog).forEach(f => { if(f.payoutAmount) totalWon += f.payoutAmount; });
+             }
+
+             ctx.fillStyle = "rgba(0,0,0,0.3)"; ctx.fillRect(40, 120, 720, 240);
+             ctx.fillStyle = "#fff"; ctx.font = "bold 30px monospace";
+             ctx.fillText(`WIN RATE: ${rate}`, 80, 180);
+             ctx.fillText(`W/L:      ${wins}/${total-wins}`, 80, 230);
+             ctx.fillText(`VOLUME:   ${vol}`, 80, 280);
+             ctx.fillStyle = "#4ade80"; ctx.fillText(`WON:      ${totalWon.toFixed(2)} SOL`, 80, 330);
+             
+             ctx.font = "14px monospace"; ctx.fillStyle = "#ffffffaa"; ctx.fillText("alonisthe.dev", 640, 380);
+             
+             document.getElementById('share-preview').src = canvas.toDataURL('image/png');
+             document.getElementById('share-modal').classList.remove('hidden');
+        };
+
+        if (state.baseImageSrc) {
+            const img = new Image();
+            img.crossOrigin = "Anonymous"; 
+            img.onload = () => {
+                ctx.drawImage(img, 0, 0, 800, 400);
+                drawContent(); 
+            };
+            img.onerror = () => drawContent(); 
+            img.src = state.baseImageSrc;
+        } else {
+            drawContent();
+        }
+    };
+
+    window.downloadShareImage = function() {
+        const link = document.createElement('a');
+        link.download = 'ASDForecast_Stats.png';
+        link.href = document.getElementById('share-preview').src;
+        link.click();
+    };
+
+    window.shareToTwitter = function() {
+        downloadShareImage();
+        alert("Image downloaded! Attach it to your tweet in the new window.");
+        
+        let totalWon = 0;
+        let rate = "0%";
+        if (state.userLog) {
+             rate = document.getElementById('stat-winrate').innerText.split('%')[0] + "%";
+             Object.values(state.userLog).forEach(f => { if(f.payoutAmount) totalWon += f.payoutAmount; });
+        }
+
+        const text = encodeURIComponent(`I'm trading on ASDForecast.\n\n🔥 Win Rate: ${rate}\n💰 Total Won: ${totalWon.toFixed(2)} SOL\n\nCan you beat my stats?`);
+        const url = encodeURIComponent("https://www.alonisthe.dev/asdforecast");
+        window.open(`https://twitter.com/intent/tweet?text=${text}&url=${url}`, '_blank');
+    };
+
     function renderHistory() {
         if (!state.fullHistory || state.fullHistory.length === 0) { ui.historyRows.innerHTML = '<tr><td colspan="6" class="py-2 italic opacity-50">Waiting for first frame close...</td></tr>'; return; }
-        const dataToShow = state.isHistoryExpanded ? state.fullHistory : state.fullHistory.slice(0, 3);
+        
+        const now = Date.now();
+        const validHistory = state.fullHistory.filter(f => (f.endTime || 0) <= now);
+        const dataToShow = state.isHistoryExpanded ? validHistory.slice(0, 50) : validHistory.slice(0, 3);
+
         ui.historyRows.innerHTML = dataToShow.map(f => {
             const time = new Date(f.time).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
             let resColor = f.result==='UP'?'text-green-400':(f.result==='DOWN'?'text-red-400':(f.result==='CANCELLED'?'text-red-600 font-bold':(f.result==='PAUSED'?'text-yellow-500 font-bold':'text-gray-400')));
@@ -437,6 +481,18 @@
         ui.ticker.innerHTML = trades.slice(0,10).map(t => `<div class="ticker-item">[ ${t.user.slice(0,4)}.. bought <span class="${t.direction==='UP'?'text-green-400':'text-red-400'}">${t.shares.toFixed(1)} ${t.direction}</span> ]</div>`).join('') + trades.slice(0,10).map(t => `<div class="ticker-item">[ ${t.user.slice(0,4)}.. bought <span class="${t.direction==='UP'?'text-green-400':'text-red-400'}">${t.shares.toFixed(1)} ${t.direction}</span> ]</div>`).join('');
     }
 
+    function renderLeaderboard(data) {
+        if (!data || data.length === 0) { ui.leaderboardRows.innerHTML = '<tr><td colspan="4" class="py-2 italic opacity-50 text-center">No Data Yet</td></tr>'; return; }
+        ui.leaderboardRows.innerHTML = data.map((user, index) => `
+            <tr class="border-b border-orange-900/20">
+                <td class="py-2 text-white font-bold"><span class="text-orange-500 mr-2">#${index+1}</span> ${user.pubKey.slice(0,5)}...</td>
+                <td class="py-2 text-right text-gray-300">${user.bets}</td>
+                <td class="py-2 text-right text-yellow-400">${user.winRate.toFixed(0)}%</td>
+                <td class="py-2 text-right text-green-400 font-bold">${user.totalWon.toFixed(2)} SOL</td>
+            </tr>
+        `).join('');
+    }
+
     async function poll() {
         try {
             let url = `${API_URL}/state`;
@@ -448,13 +504,28 @@
             state.isOnline = true;
             if(ui.statusText) { ui.statusText.innerText = "ONLINE"; ui.statusText.className = "text-green-400"; }
             if(ui.topStatus) ui.topStatus.className = "flex items-center gap-2 text-xs font-mono bg-black/40 px-3 py-2 rounded border border-green-900/50 transition-colors duration-500";
-            if(ui.lastUpdated) ui.lastUpdated.innerText = `Last Update: ${new Date().toLocaleTimeString()}`;
+            if(ui.lastUpdated && data.lastPriceTimestamp) ui.lastUpdated.innerText = `Price Data: ${new Date(data.lastPriceTimestamp).toLocaleTimeString()}`;
             if(data.backendVersion) ui.backendVersion.innerText = `v${data.backendVersion}`;
+
+            // Sync Image
+            state.baseImageSrc = data.baseImageSrc;
+
+            state.isResetting = data.isResetting;
+            state.isCancelled = data.isCancelled;
 
             if (data.isResetting) {
                 ui.netSharesHeader.innerText = "CALCULATING RESULTS..."; ui.netSharesHeader.classList.add("text-blue-400", "animate-pulse"); ui.netSharesHeader.classList.remove("text-red-500");
                 ui.btnUp.disabled = true; ui.btnDown.disabled = true; ui.qty.disabled = true;
                 ui.pauseOverlay.classList.remove('hidden');
+                ui.statusText.innerText = "RESETTING"; ui.statusText.className = "text-blue-400";
+                if(ui.pauseText) { ui.pauseText.innerText = "CALCULATING RESULTS..."; ui.pauseText.className = "text-blue-400 font-bold text-xl"; }
+            }
+            else if (data.isCancelled) {
+                ui.netSharesHeader.innerText = "FRAME CANCELLED"; ui.netSharesHeader.classList.add("text-red-500"); 
+                ui.btnUp.disabled = true; ui.btnDown.disabled = true; ui.qty.disabled = true;
+                ui.pauseOverlay.classList.remove('hidden');
+                ui.statusText.innerText = "CANCELLED"; ui.statusText.className = "text-red-500";
+                if(ui.pauseText) { ui.pauseText.innerText = "FRAME CANCELLED - funds refunded"; ui.pauseText.className = "text-red-500 font-bold text-xl"; }
             }
             else if (data.isPaused) {
                 ui.netSharesHeader.innerText = "MARKET PAUSED"; ui.netSharesHeader.classList.add("text-red-500"); 
@@ -462,13 +533,21 @@
                 ui.pauseOverlay.classList.remove('hidden');
                 ui.statusText.innerText = "PAUSED"; ui.statusText.className = "text-yellow-500";
                 ui.topStatus.className = "flex items-center gap-2 text-xs font-mono bg-black/40 px-3 py-2 rounded border border-yellow-900/50";
+                if(ui.pauseText) { ui.pauseText.innerText = "FRAME PAUSED"; ui.pauseText.className = "text-yellow-500 font-bold text-xl"; }
             } else {
-                ui.netSharesHeader.innerText = "Net Shares Bought"; ui.netSharesHeader.classList.remove("text-red-500");
-                ui.btnUp.disabled = false; ui.btnDown.disabled = false; ui.qty.disabled = false;
-                ui.pauseOverlay.classList.add('hidden');
+                // LOCAL LOCKDOWN CHECK
+                if (state.targetEndTime && state.targetEndTime <= Date.now() + 500) {
+                     ui.netSharesHeader.innerText = "CALCULATING RESULTS..."; ui.netSharesHeader.classList.add("text-blue-400", "animate-pulse");
+                     ui.btnUp.disabled = true; ui.btnDown.disabled = true; ui.qty.disabled = true;
+                     ui.pauseOverlay.classList.remove('hidden');
+                     if(ui.pauseText) { ui.pauseText.innerText = "CALCULATING RESULTS..."; ui.pauseText.className = "text-blue-400 font-bold text-xl"; }
+                } else {
+                     ui.netSharesHeader.innerText = "Net Shares Bought"; ui.netSharesHeader.classList.remove("text-red-500", "text-blue-400", "animate-pulse");
+                     ui.btnUp.disabled = false; ui.btnDown.disabled = false; ui.qty.disabled = false;
+                     ui.pauseOverlay.classList.add('hidden');
+                }
             }
 
-            // SAFE RENDER BLOCKS
             try {
                 if (data.market) {
                     state.prices = { up: data.market.priceUp, down: data.market.priceDown };
@@ -492,7 +571,6 @@
                 }
 
                 const ms = data.msUntilClose;
-                ui.timer.innerText = `${Math.floor((ms%(1000*60*60))/(1000*60))}:${Math.floor((ms%(1000*60))/1000).toString().padStart(2,'0')}`;
                 if(data.currentVolume !== undefined) ui.currentPot.innerText = `${data.currentVolume.toFixed(3)} SOL`;
 
                 state.fullHistory = data.history || [];
@@ -511,9 +589,11 @@
                     
                     if (state.fullHistory.length > 0) {
                         const last = state.fullHistory[0];
-                        if (state.userLog[last.id]) {
+                        const nowTime = Date.now();
+                        if (last.endTime < nowTime && state.userLog[last.id]) {
                              const log = state.userLog[last.id];
                              let res = log.result === 'WIN' ? `<span class="text-green-400">WIN</span>` : `<span class="text-red-400">LOSS</span>`;
+                             if (log.result === 'CANCELLED') res = `<span class="text-yellow-500">REFUNDED</span>`;
                              ui.lastFrameStats.innerHTML = `
                                 <div class="flex justify-between"><span>Vol:</span> <span>${last.totalSol.toFixed(2)} SOL</span></div>
                                 <div class="flex justify-between text-[10px] border-t border-white/10 pt-1 mt-1">
@@ -521,11 +601,12 @@
                                 </div>
                                 <div class="flex justify-between border-t border-white/10 mt-1 pt-1"><span>Result:</span> ${res}</div>
                              `;
-                        } else { ui.lastFrameStats.innerHTML = `<span class="italic opacity-50">Did not participate.</span>`; }
+                        } else { ui.lastFrameStats.innerHTML = `<span class="italic opacity-50">Waiting for close...</span>`; }
                     }
                 }
                 renderHistory();
                 if(data.recentTrades) renderTicker(data.recentTrades);
+                if(data.leaderboard) renderLeaderboard(data.leaderboard);
 
                 if(data.activePosition) {
                     const uS = data.activePosition.upShares || 0;
@@ -533,7 +614,6 @@
                     const dS = data.activePosition.downShares || 0;
                     const dV = data.activePosition.downSol || 0;
 
-                    // FORMAT: Shares (SOL)
                     if (ui.statActUp) ui.statActUp.innerHTML = `${Math.round(uS)} <span class="text-gray-500">(${uV.toFixed(2)} SOL)</span>`;
                     if (ui.statActDown) ui.statActDown.innerHTML = `${Math.round(dS)} <span class="text-gray-500">(${dV.toFixed(2)} SOL)</span>`;
                     
@@ -563,6 +643,9 @@
     }
 
     async function buy(dir) {
+        if (state.targetEndTime && state.targetEndTime <= Date.now() + 500) {
+            return alert("Market has closed. Calculating results.");
+        }
         if(!state.isOnline) return alert("System Offline");
         const qty = parseInt(ui.qty.value);
         const cost = qty * (dir==='UP'?state.prices.up:state.prices.down);
