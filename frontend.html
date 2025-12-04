@@ -1,4 +1,4 @@
-<!-- ASDForecast v114.0 // FIX: STATUS INDICATOR BEHAVIOR & IMAGE LOADING -->
+<!-- ASDForecast v116.0 // FIX: IMAGE LOGIC & PREVIOUS FRAME LABEL -->
 
 <!-- Dependencies -->
 <script src="https://cdn.tailwindcss.com"></script>
@@ -51,18 +51,19 @@
     .btn-down:hover:not(:disabled) { background: #991b1b; }
 
     /* MODAL STYLES */
-    #share-modal { backdrop-filter: blur(5px); }
+    #share-modal, #history-modal { backdrop-filter: blur(5px); }
     .share-card { background: #1a0f0a; border: 2px solid #ea580c; padding: 20px; border-radius: 12px; max-width: 90%; width: 500px; text-align: center; }
     #share-preview { width: 100%; border-radius: 8px; border: 2px solid #7c2d12; margin-bottom: 15px; }
+    
+    /* HISTORY MODAL SPECIFIC */
+    .history-card { background: #1a0f0a; border: 2px solid #ea580c; border-radius: 12px; width: 90%; max-width: 900px; height: 80vh; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 20px 50px rgba(0,0,0,0.8); }
 
     #wallet-modal { z-index: 9999; }
     
-    /* HISTORY SCROLL CSS */
-    .history-collapsed { max-height: auto; overflow: hidden; }
-    .history-expanded { max-height: 300px; overflow-y: auto; border-bottom: 1px solid #ea580c; }
-    .history-expanded::-webkit-scrollbar { width: 8px; }
-    .history-expanded::-webkit-scrollbar-track { background: #2a1005; }
-    .history-expanded::-webkit-scrollbar-thumb { background: #ea580c; border-radius: 4px; }
+    /* SCROLLBARS */
+    .custom-scroll::-webkit-scrollbar { width: 8px; }
+    .custom-scroll::-webkit-scrollbar-track { background: #2a1005; }
+    .custom-scroll::-webkit-scrollbar-thumb { background: #ea580c; border-radius: 4px; }
 
     /* BROADCAST STYLE */
     .broadcast-box {
@@ -94,7 +95,6 @@
                 </div>
 
                 <div class="flex flex-col items-end">
-                    <!-- STATUS INDICATOR (Cleaned up) -->
                     <div id="top-status-indicator" class="flex items-center gap-2 text-xs font-mono bg-black/40 px-3 py-2 rounded border border-red-900/50 text-red-500 transition-colors duration-500">
                         <span id="status-dot" class="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span>
                         <span id="status-text">OFFLINE</span>
@@ -155,16 +155,18 @@
                     </div>
                 </div>
 
-                <!-- HISTORY -->
+                <!-- HISTORY PANEL -->
                 <div class="panel p-6 bg-black/40">
-                    <div class="flex justify-between items-center mb-4"><h3 class="text-lg font-bold text-white">Previous Frames</h3><span id="history-count" class="text-xs text-orange-500 font-mono"></span></div>
-                    <div id="history-container" class="history-collapsed">
+                    <div class="flex justify-between items-center mb-4">
+                        <h3 class="text-lg font-bold text-white">Previous Frames</h3>
+                        <button onclick="openHistoryModal()" class="text-xs bg-orange-900 text-orange-200 px-3 py-1 rounded hover:bg-orange-800 font-mono font-bold border border-orange-700">VIEW HISTORY (50) ⤢</button>
+                    </div>
+                    <div class="overflow-hidden">
                         <table class="w-full text-sm font-mono text-left">
                             <thead class="text-orange-500 border-b border-orange-900/50 sticky top-0 bg-[#1d120e] z-10"><tr><th class="pb-2">Time (Close)</th><th class="pb-2">Result</th><th class="pb-2">Open</th><th class="pb-2">Close</th><th class="pb-2">Volume</th><th class="pb-2">Your Status</th></tr></thead>
                             <tbody id="history-rows" class="text-orange-200/80"><tr><td colspan="6" class="py-2 italic opacity-50">Waiting for first frame close...</td></tr></tbody>
                         </table>
                     </div>
-                    <button id="btn-expand-history" onclick="window.toggleHistory()" class="w-full py-2 text-xs text-orange-500/50 hover:text-orange-500 hover:bg-orange-900/20 mt-2 font-mono border-t border-dashed border-orange-900/30 transition-colors hidden">[ + ] EXPAND / COLLAPSE (LAST 50)</button>
                 </div>
             </div>
 
@@ -199,10 +201,11 @@
                             <!-- LAST FRAME PERFORMANCE (UPDATED LAYOUT) -->
                             <div class="bg-black/50 p-2 rounded border border-orange-900/50 text-xs font-mono flex justify-between items-center gap-2">
                                 <div id="last-frame-stats" class="flex-grow">
-                                    <span class="text-gray-400 block mb-1 uppercase tracking-wider text-[10px]">Last Frame Performance</span>
+                                    <!-- UPDATED LABEL HERE -->
+                                    <span class="text-gray-400 block mb-1 uppercase tracking-wider text-[10px]">Previous Frame</span>
                                     <div class="text-orange-200 italic opacity-50">Waiting for close...</div>
                                 </div>
-                                <!-- DYNAMIC STATUS IMAGE -->
+                                <!-- DYNAMIC STATUS IMAGE with onerror -->
                                 <img id="last-frame-img" src="" class="w-12 h-12 rounded border border-orange-900/50 hidden object-cover" alt="Status" onerror="this.classList.add('hidden')">
                             </div>
                         </div>
@@ -245,6 +248,7 @@
                     <!-- Link to Solscan -->
                     <a id="link-last-payout" href="https://solscan.io/account/BXSp5y6Ua6tB5fZDe1EscVaaEaZLg1yqzrsPqAXhKJYy" target="_blank" class="text-xl font-bold font-mono text-white hover:text-orange-400 transition-colors underline decoration-dotted decoration-orange-900" title="Verify on Solscan">--</a>
                 </div>
+                <!-- MODIFIED: Header changed from Total Winnings to Lifetime Payouts -->
                 <div><span class="block text-[10px] text-orange-400 font-mono uppercase">Lifetime Payouts</span><span id="global-winnings" class="text-xl font-bold font-mono text-green-400">0.00 SOL</span></div>
                 <div><span class="block text-[10px] text-orange-400 font-mono uppercase">Lifetime Degens</span><span id="global-lifetime-users" class="text-xl font-bold font-mono text-yellow-400">0</span></div>
             </div>
@@ -282,7 +286,7 @@
                 <div class="mt-6 border-t-2 border-red-900/50 pt-4 bg-red-900/10 p-4 rounded"><strong class="text-red-500 block mb-1 text-lg">⚠️ DISCLAIMER & RISK WARNING</strong><p class="text-xs text-orange-200 leading-relaxed">This platform is currently LIVE on Solana Mainnet. The operators are not responsible for lost funds, smart contract errors, oracle latency, or network failures. <br><br><strong>PREDICT RESPONSIBLY:</strong> Never wager funds you cannot afford to lose. This is an experimental technology demonstration.</p></div>
             </div>
         </div>
-        <div class="text-center text-xs text-gray-500 font-mono pt-2 border-t border-orange-900/50"><span class="text-orange-400">Frontend v114.0</span> | Backend <span id="backend-version">v---</span></div>
+        <div class="text-center text-xs text-gray-500 font-mono pt-2 border-t border-orange-900/50"><span class="text-orange-400">Frontend v116.0</span> | Backend <span id="backend-version">v---</span></div>
     </div>
 
     <!-- SHARE MODAL -->
@@ -294,6 +298,45 @@
             <div class="flex gap-2 mt-4">
                 <button onclick="downloadShareImage()" class="flex-1 bg-orange-600 text-white py-3 rounded font-bold hover:bg-orange-500 shadow-lg">DOWNLOAD 💾</button>
                 <button onclick="shareToTwitter()" class="flex-1 bg-black border border-white text-white py-3 rounded font-bold hover:bg-gray-900 shadow-lg">POST TO 𝕏</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- HISTORY MODAL (NEW V115.0) -->
+    <div id="history-modal" class="fixed inset-0 z-50 hidden flex items-center justify-center bg-black/80 backdrop-blur-sm">
+        <div class="history-card flex flex-col">
+            <!-- Modal Header -->
+            <div class="p-4 border-b border-orange-900/50 flex justify-between items-center bg-[#1d120e]">
+                <div>
+                    <h2 class="text-xl font-bold text-white">FRAME HISTORY</h2>
+                    <p class="text-[10px] text-orange-400/70 font-mono">Last 50 Frames</p>
+                </div>
+                <div class="flex items-center gap-4">
+                     <input type="text" id="public-history-search" placeholder="Search ID or Result..." class="bg-black text-white text-xs p-2 rounded border border-gray-700 w-48" onkeyup="filterPublicHistory()">
+                     <button onclick="document.getElementById('history-modal').classList.add('hidden')" class="text-gray-400 hover:text-white text-2xl font-bold">✕</button>
+                </div>
+            </div>
+            
+            <!-- Modal Body (Scrollable Table) -->
+            <div class="flex-grow overflow-y-auto custom-scroll p-4 bg-black/20">
+                <table class="w-full text-xs font-mono text-left">
+                    <thead class="text-orange-500 border-b border-orange-900/50 sticky top-0 bg-[#1d120e] shadow-lg">
+                        <tr>
+                            <th class="pb-3 pl-2">Time (Close)</th>
+                            <th class="pb-3">ID</th>
+                            <th class="pb-3">Result</th>
+                            <th class="pb-3 text-right">Open</th>
+                            <th class="pb-3 text-right">Close</th>
+                            <th class="pb-3 text-right">Vol (SOL)</th>
+                            <th class="pb-3 text-right">Fee (SOL)</th>
+                            <th class="pb-3 text-right">Users</th>
+                            <th class="pb-3 text-right pr-2">Payout (SOL)</th>
+                        </tr>
+                    </thead>
+                    <tbody id="public-history-rows" class="text-orange-200/80 divide-y divide-orange-900/20">
+                        <!-- Populated via JS -->
+                    </tbody>
+                </table>
             </div>
         </div>
     </div>
@@ -360,7 +403,11 @@
             globalLifetimeUsers: document.getElementById('global-lifetime-users'),
             lastFrameImg: document.getElementById('last-frame-img'),
             broadcastContainer: document.getElementById('admin-broadcast-container'),
-            broadcastText: document.getElementById('broadcast-text')
+            broadcastText: document.getElementById('broadcast-text'),
+            
+            // HISTORY MODAL
+            publicHistoryRows: document.getElementById('public-history-rows'),
+            publicHistorySearch: document.getElementById('public-history-search')
         };
 
         if(ui.btnInc) ui.btnInc.onclick = () => adjustQty(1);
@@ -404,20 +451,52 @@
 
     function formatChange(el, val) { if (!val) val = 0; const sign = val >= 0 ? '+' : ''; const color = val > 0 ? 'text-green-400' : (val < 0 ? 'text-red-400' : 'text-gray-400'); el.innerHTML = `<span class="${color}">${sign}${val.toFixed(2)}%</span>`; }
     
-    // GLOBAL SCOPE FOR ONCLICK
-    window.toggleHistory = function() {
-        state.isHistoryExpanded = !state.isHistoryExpanded;
-        const container = ui.historyContainer;
-        if (state.isHistoryExpanded) {
-            ui.btnExpand.innerText = "[ - ] COLLAPSE HISTORY";
-            container.classList.remove('history-collapsed');
-            container.classList.add('history-expanded');
-        } else {
-            ui.btnExpand.innerText = "[ + ] EXPAND / COLLAPSE (LAST 50)";
-            container.classList.remove('history-expanded');
-            container.classList.add('history-collapsed');
+    // NEW: OPEN HISTORY MODAL
+    window.openHistoryModal = function() {
+        if (!state.fullHistory || state.fullHistory.length === 0) {
+            alert("No history data available yet.");
+            return;
         }
-        renderHistory();
+        // Take last 50
+        const recentHistory = state.fullHistory.slice(0, 50);
+        renderPublicHistory(recentHistory);
+        document.getElementById('history-modal').classList.remove('hidden');
+    };
+
+    function renderPublicHistory(data) {
+        ui.publicHistoryRows.innerHTML = data.map(f => {
+            const timeVal = f.endTime || f.time;
+            const time = new Date(timeVal).toLocaleString();
+            let resColor = 'text-gray-400';
+            if (f.result === 'UP') resColor = 'text-green-400 font-bold';
+            if (f.result === 'DOWN') resColor = 'text-red-400 font-bold';
+            if (f.result === 'CANCELLED') resColor = 'text-red-600 font-bold';
+
+            return `
+                <tr class="hover:bg-white/5 border-b border-orange-900/20">
+                    <td class="py-3 pl-2 whitespace-nowrap">${time}</td>
+                    <td class="py-3 text-xs text-gray-500 font-mono">${f.id}</td>
+                    <td class="py-3 ${resColor}">${f.result}</td>
+                    <td class="py-3 text-right text-gray-400">$${(f.open||0).toFixed(2)}</td>
+                    <td class="py-3 text-right text-gray-400">$${(f.close||0).toFixed(2)}</td>
+                    <td class="py-3 text-right font-bold text-white">${(f.totalSol||0).toFixed(2)}</td>
+                    <td class="py-3 text-right text-red-400/70">${(f.fee||0).toFixed(3)}</td>
+                    <td class="py-3 text-right text-blue-300">${f.users||0}</td>
+                    <td class="py-3 text-right pr-2 text-green-400 font-bold">${(f.payout||0).toFixed(2)}</td>
+                </tr>
+            `;
+        }).join('');
+    }
+
+    window.filterPublicHistory = function() {
+        const term = ui.publicHistorySearch.value.toLowerCase();
+        // Filter from the global state history, sliced to 50
+        const sourceData = state.fullHistory.slice(0, 50);
+        const filtered = sourceData.filter(f => 
+            f.id.toString().includes(term) || 
+            f.result.toLowerCase().includes(term)
+        );
+        renderPublicHistory(filtered);
     };
 
     window.toggleAbout = function() {
@@ -753,7 +832,7 @@
                              let res = log.result === 'WIN' ? `<span class="text-green-400">WIN</span>` : `<span class="text-red-400">LOSS</span>`;
                              if (log.result === 'CANCELLED') res = `<span class="text-yellow-500">REFUNDED</span>`;
                              // UPDATE: Check for Refunded Error
-                             if (log.result === 'REFUNDED_ERROR') res = `<span class="text-yellow-500 font-bold">⚠️ ERR: REFUNDED</span>`;
+                             if (log.result === 'REFUNDED_ERROR') res = `<span class="text-yellow-500 font-bold">⚠️ REFUNDED</span>`;
                              
                              // TEXT UPDATE
                              ui.lastFrameStats.innerHTML = `
@@ -845,7 +924,8 @@
 
         if (state.targetEndTime && state.targetEndTime <= Date.now() + 500) {
 
-            return alert("Market has closed. Calculating results.");
+            alert("Market has closed. Calculating results.");
+            return;
 
         }
 
@@ -885,9 +965,17 @@
 
             const d = await res.json();
 
-            if(d.success) { alert(`Bought ${Math.round(d.shares)} shares!`); refreshBalance(); } else alert(d.error);
+            if(d.success) { 
+                alert(`Bought ${Math.round(d.shares)} shares!`);
+                refreshBalance(); 
+            } else { 
+                alert(d.error);
+            }
 
-        } catch(e) { console.error(e); alert("Tx Failed"); } finally { btn.innerHTML = old; btn.disabled = false; }
+        } catch(e) { 
+            console.error(e); 
+            alert("Tx Failed");
+        } finally { btn.innerHTML = old; btn.disabled = false; }
 
     }
 </script>
