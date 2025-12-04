@@ -37,9 +37,21 @@ const PAYOUT_MULTIPLIER = 0.94;
 const FEE_PERCENT = 0.0552; 
 const UPKEEP_PERCENT = 0.0048; // 0.48%
 const FRAME_DURATION = 15 * 60 * 1000; 
-const BACKEND_VERSION = "118.0"; // UPDATE: Global Stats & User Tracking
+const BACKEND_VERSION = "119.0"; // UPDATE: Caching & Input Sanitization
 
 const PRIORITY_FEE_UNITS = 50000; 
+
+// --- SECURITY & VALIDATION ---
+const SOLANA_ADDRESS_REGEX = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+const SIGNATURE_REGEX = /^[1-9A-HJ-NP-Za-km-z]{80,100}$/;
+
+function isValidSolanaAddress(address) {
+    return typeof address === 'string' && SOLANA_ADDRESS_REGEX.test(address);
+}
+
+function isValidSignature(signature) {
+    return typeof signature === 'string' && SIGNATURE_REGEX.test(signature);
+}
 
 // --- RATE LIMITING ---
 const betLimiter = rateLimit({
@@ -129,12 +141,14 @@ let gameState = {
     isCancelled: false
 };
 let historySummary = [];
-// UPDATE: Added totalWinnings and totalLifetimeUsers
 let globalStats = { totalVolume: 0, totalFees: 0, totalASDF: 0, totalWinnings: 0, totalLifetimeUsers: 0, lastASDFSignature: null };
 let processedSignatures = new Set(); 
 let globalLeaderboard = [];
-let knownUsers = new Set(); // Memory set to track unique users for lifetime stats
-let currentQueueLength = 0; // Track queue length for status reporting
+let knownUsers = new Set(); 
+let currentQueueLength = 0; 
+
+// --- STATE CACHING (NEW) ---
+let cachedPublicState = null;
 
 function loadGlobalState() {
     try {
@@ -164,7 +178,6 @@ function loadGlobalState() {
             }
         }
         
-        // Initialize Known Users Set from Disk
         console.log("> [SYS] Loading user registry...");
         const userFiles = fsSync.readdirSync(USERS_DIR);
         userFiles.forEach(f => {
@@ -172,8 +185,15 @@ function loadGlobalState() {
                 knownUsers.add(f.replace('user_','').replace('.json',''));
             }
         });
-        globalStats.totalLifetimeUsers = knownUsers.size; // Sync stats with actual file count
-        console.log(`> [SYS] Registry loaded. ${knownUsers.size} lifetime users.`);
+        globalStats.totalLifetimeUsers = knownUsers.size; 
+        
+        let recalculatedWinnings = 0;
+        if (historySummary.length > 0) {
+            recalculatedWinnings = historySummary.reduce((sum, frame) => sum + (frame.payout || 0), 0);
+        }
+        globalStats.totalWinnings = recalculatedWinnings;
+        
+        console.log(`> [SYS] Registry loaded. ${knownUsers.size} lifetime users. Total Winnings Recalculated: ${recalculatedWinnings.toFixed(2)} SOL`);
 
     } catch (e) { console.error("> [ERR] Load Error:", e); }
 }
@@ -208,6 +228,11 @@ async function saveSystemState() {
 }
 
 async function getUser(pubKey) {
+    // SANITIZATION: Strict check before file system access
+    if (!isValidSolanaAddress(pubKey)) {
+        return { wins: 0, losses: 0, totalSol: 0, framesPlayed: 0, frameLog: {} };
+    }
+
     const file = path.join(USERS_DIR, `user_${pubKey}.json`);
     try {
         const data = await fs.readFile(file, 'utf8');
@@ -218,6 +243,9 @@ async function getUser(pubKey) {
 }
 
 async function saveUser(pubKey, data) {
+    // SANITIZATION: Strict check
+    if (!isValidSolanaAddress(pubKey)) return;
+
     try {
         const file = path.join(USERS_DIR, `user_${pubKey}.json`);
         await atomicWrite(file, data);
@@ -226,6 +254,7 @@ async function saveUser(pubKey, data) {
 
 loadGlobalState();
 
+// ... (unchanged ASDF logic) ... 
 async function updateASDFPurchases() {
     const connection = new Connection(SOLANA_NETWORK); 
     try {
@@ -282,6 +311,7 @@ function getCurrentWindowStart() {
     return start.getTime();
 }
 
+// ... (queue logic unchanged) ...
 async function processPayoutQueue() {
     const release = await payoutMutex.acquire();
     try {
@@ -364,6 +394,7 @@ async function processPayoutQueue() {
     finally { release(); }
 }
 
+// ... (queuePayouts, processRefunds unchanged) ...
 async function queuePayouts(frameId, result, bets, totalVolume) {
     if (totalVolume === 0) return;
     const queue = []; 
@@ -455,7 +486,6 @@ async function processRefunds(frameId, bets) {
     processPayoutQueue();
 }
 
-// --- SHARED CANCELLATION LOGIC ---
 async function cancelCurrentFrameAndRefund() {
     gameState.isPaused = true;
     gameState.isCancelled = true;
@@ -476,7 +506,6 @@ async function cancelCurrentFrameAndRefund() {
     }
     await saveSystemState();
 }
-
 
 async function closeFrame(closePrice, closeTime) {
     const release = await stateMutex.acquire(); 
@@ -519,7 +548,7 @@ async function closeFrame(closePrice, closeTime) {
             }
             if (winnerCount > 0) {
                 payoutTotal = potSol;
-                globalStats.totalWinnings += payoutTotal; // UPDATE: Track global winnings
+                globalStats.totalWinnings += payoutTotal; 
             }
         }
 
@@ -570,7 +599,6 @@ async function closeFrame(closePrice, closeTime) {
             }));
         }
 
-        // SCALABILITY FIX: Memory Cleanup
         processedSignatures.clear();
         await fs.writeFile(SIGS_FILE, '');
 
@@ -685,11 +713,10 @@ setInterval(updatePrice, 10000);
 updatePrice(); 
 processPayoutQueue();
 
-// --- ENDPOINTS ---
-app.get('/api/state', stateLimiter, async (req, res) => {
-    const now = new Date();
-    const nextWindowStart = getCurrentWindowStart() + FRAME_DURATION;
-    const msUntilClose = nextWindowStart - now.getTime();
+// --- CACHE GENERATION (NEW) ---
+// Updates the public state cache every 500ms
+function updatePublicStateCache() {
+    const now = Date.now();
     const priceChange = gameState.price - gameState.candleOpen;
     const percentChange = gameState.candleOpen ? (priceChange / gameState.candleOpen) * 100 : 0;
     const currentVolume = gameState.bets.reduce((acc, b) => acc + b.costSol, 0);
@@ -698,27 +725,78 @@ app.get('/api/state', stateLimiter, async (req, res) => {
     const priceUp = (gameState.poolShares.up / totalShares) * PRICE_SCALE;
     const priceDown = (gameState.poolShares.down / totalShares) * PRICE_SCALE;
 
-    const nowTime = Date.now();
     const history = gameState.sharePriceHistory || [];
     const baseline = { up: 0.05, down: 0.05 };
-    const oneMinAgo = history.find(x => x.t >= nowTime - 60000) || baseline;
-    const fiveMinAgo = history.find(x => x.t >= nowTime - 300000) || baseline;
+    const oneMinAgo = history.find(x => x.t >= now - 60000) || baseline;
+    const fiveMinAgo = history.find(x => x.t >= now - 300000) || baseline;
+
     function getPercentChange(current, old) { if (!old || old === 0) return 0; return ((current - old) / old) * 100; }
+
     const changes = {
         up1m: getPercentChange(priceUp, oneMinAgo.up),
         up5m: getPercentChange(priceUp, fiveMinAgo.up),
         down1m: getPercentChange(priceDown, oneMinAgo.down),
         down5m: getPercentChange(priceDown, fiveMinAgo.down),
     };
-    const uniqueUsers = new Set(gameState.bets.map(b => b.user)).size;
     
+    const uniqueUsers = new Set(gameState.bets.map(b => b.user)).size;
+    const lastFramePot = historySummary.length > 0 ? historySummary[0].totalSol : 0;
+
+    // The Cache Object
+    cachedPublicState = {
+        price: gameState.price,
+        openPrice: gameState.candleOpen,
+        candleStartTime: gameState.candleStartTime,
+        candleEndTime: gameState.candleStartTime + FRAME_DURATION,
+        change: percentChange,
+        currentVolume: currentVolume,
+        uniqueUsers: uniqueUsers,
+        platformStats: globalStats,
+        isPaused: gameState.isPaused,
+        isResetting: gameState.isResetting,
+        isCancelled: gameState.isCancelled,
+        market: { 
+            priceUp, priceDown, 
+            sharesUp: gameState.poolShares.up, 
+            sharesDown: gameState.poolShares.down, 
+            changes 
+        },
+        history: historySummary,
+        recentTrades: gameState.recentTrades,
+        leaderboard: globalLeaderboard,
+        lastPriceTimestamp: gameState.lastPriceTimestamp,
+        backendVersion: BACKEND_VERSION,
+        payoutQueueLength: currentQueueLength,
+        lastFramePot: lastFramePot,
+        totalLifetimeUsers: globalStats.totalLifetimeUsers,
+        totalWinnings: globalStats.totalWinnings
+    };
+}
+
+// Start the cache update loop
+setInterval(updatePublicStateCache, 500);
+
+// --- ENDPOINTS ---
+app.get('/api/state', stateLimiter, async (req, res) => {
+    // Fallback if cache is not yet built (e.g. immediately after restart)
+    if (!cachedPublicState) updatePublicStateCache();
+
+    // Start with cached data
+    const response = { ...cachedPublicState };
+
+    // Re-calculate precise time remaining to ensure countdown is smooth
+    const now = new Date();
+    const nextWindowStart = getCurrentWindowStart() + FRAME_DURATION;
+    response.msUntilClose = nextWindowStart - now.getTime();
+
+    // Handle personalized data ONLY if a valid user key is provided
     const userKey = req.query.user;
-    let myStats = null;
-    let activePosition = null;
-    if (userKey) {
-        myStats = await getUser(userKey);
+    if (userKey && isValidSolanaAddress(userKey)) {
+        const myStats = await getUser(userKey);
+        response.userStats = myStats;
+
         const userBets = gameState.bets.filter(b => b.user === userKey);
-        activePosition = {
+        response.activePosition = {
             upShares: userBets.filter(b => b.direction === 'UP').reduce((a, b) => a + b.shares, 0),
             downShares: userBets.filter(b => b.direction === 'DOWN').reduce((a, b) => a + b.shares, 0),
             upSol: userBets.filter(b => b.direction === 'UP').reduce((a, b) => a + b.costSol, 0),
@@ -726,23 +804,8 @@ app.get('/api/state', stateLimiter, async (req, res) => {
             wageredSol: userBets.reduce((a, b) => a + b.costSol, 0)
         };
     }
-    
-    // UPDATE: Add payment status info
-    const lastFramePot = historySummary.length > 0 ? historySummary[0].totalSol : 0;
-    
-    res.json({
-        price: gameState.price, openPrice: gameState.candleOpen, candleStartTime: gameState.candleStartTime, candleEndTime: gameState.candleStartTime + FRAME_DURATION,
-        change: percentChange, msUntilClose: msUntilClose, currentVolume: currentVolume, uniqueUsers: uniqueUsers,
-        platformStats: globalStats, isPaused: gameState.isPaused, isResetting: gameState.isResetting, isCancelled: gameState.isCancelled,
-        market: { priceUp, priceDown, sharesUp: gameState.poolShares.up, sharesDown: gameState.poolShares.down, changes: changes },
-        history: historySummary, recentTrades: gameState.recentTrades, userStats: myStats, activePosition: activePosition,
-        leaderboard: globalLeaderboard, lastPriceTimestamp: gameState.lastPriceTimestamp,
-        backendVersion: BACKEND_VERSION,
-        // NEW FIELDS
-        payoutQueueLength: currentQueueLength,
-        lastFramePot: lastFramePot,
-        totalLifetimeUsers: globalStats.totalLifetimeUsers
-    });
+
+    res.json(response);
 });
 
 app.get('/api/share-image', (req, res) => {
@@ -755,7 +818,11 @@ app.post('/api/verify-bet', betLimiter, async (req, res) => {
     if (gameState.isCancelled) return res.status(400).json({ error: "MARKET_CANCELLED" });
 
     const { signature, direction, userPubKey } = req.body;
-    if (!signature || !userPubKey) return res.status(400).json({ error: "MISSING_DATA" });
+    
+    // SANITIZATION
+    if (!signature || !userPubKey || !isValidSolanaAddress(userPubKey) || !isValidSignature(signature)) {
+        return res.status(400).json({ error: "INVALID_DATA_FORMAT" });
+    }
     
     if (processedSignatures.has(signature)) return res.status(400).json({ error: "DUPLICATE_TX_DETECTED" });
 
@@ -806,8 +873,6 @@ app.post('/api/verify-bet', betLimiter, async (req, res) => {
         if (!knownUsers.has(userPubKey)) {
             knownUsers.add(userPubKey);
             globalStats.totalLifetimeUsers++;
-            // We write stats to disk at the end of the block or interval, 
-            // but saveSystemState handles atomic writes effectively.
         }
 
         getUser(userPubKey).then(userData => {
@@ -822,6 +887,9 @@ app.post('/api/verify-bet', betLimiter, async (req, res) => {
         globalStats.totalVolume += solAmount;
         processedSignatures.add(signature);
         await fs.appendFile(path.join(DATA_DIR, 'signatures.log'), signature + '\n');
+
+        // Trigger immediate cache refresh to reflect volume/shares changes
+        updatePublicStateCache();
 
         await saveSystemState();
         res.json({ success: true, shares: sharesReceived, price: price });
