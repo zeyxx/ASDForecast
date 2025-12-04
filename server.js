@@ -37,11 +37,11 @@ const PAYOUT_MULTIPLIER = 0.94;
 const FEE_PERCENT = 0.0552; 
 const UPKEEP_PERCENT = 0.0048; // 0.48%
 const FRAME_DURATION = 15 * 60 * 1000; 
-const BACKEND_VERSION = "124.0"; // UPDATE: Live Logs
+const BACKEND_VERSION = "125.0"; // UPDATE: Payout Mutex & Retry Fix
 
 const PRIORITY_FEE_UNITS = 50000; 
 
-// --- LOGGING SYSTEM (NEW) ---
+// --- LOGGING SYSTEM ---
 const serverLogs = [];
 const MAX_LOGS = 100;
 
@@ -338,6 +338,7 @@ function getCurrentWindowStart() {
     return start.getTime();
 }
 
+// --- PAYOUT PROCESSOR (UPDATED V125) ---
 async function processPayoutQueue() {
     const release = await payoutMutex.acquire();
     try {
@@ -356,7 +357,11 @@ async function processPayoutQueue() {
         
         while (queueData.length > 0) {
             const batch = queueData[0];
+            // Ensure retries property exists
+            if (typeof batch.retries === 'undefined') batch.retries = 0;
+
             const { type, recipients, frameId } = batch;
+            
             try {
                 const tx = new Transaction();
                 const priorityFeeIx = ComputeBudgetProgram.setComputeUnitPrice({ microLamports: PRIORITY_FEE_UNITS });
@@ -411,10 +416,31 @@ async function processPayoutQueue() {
                         }
                     }
                 }
-            } catch (e) { log(`> [TX] Batch Failed: ${e.message}`, "ERR"); }
-            queueData.shift();
-            await atomicWrite(QUEUE_FILE, queueData);
-            currentQueueLength = queueData.length;
+                
+                // Success or Empty Batch -> Remove
+                queueData.shift();
+                await atomicWrite(QUEUE_FILE, queueData);
+                currentQueueLength = queueData.length;
+
+            } catch (e) { 
+                log(`> [TX] Batch Failed: ${e.message}`, "ERR");
+                
+                // Increment retry logic
+                batch.retries = (batch.retries || 0) + 1;
+                
+                if (batch.retries >= 5) {
+                     log(`> [QUEUE] Batch dropped after 5 retries.`, "ERR");
+                     queueData.shift(); // Drop
+                } else {
+                     // Save state with new retry count
+                     await atomicWrite(QUEUE_FILE, queueData);
+                     // Break loop to allow network/server to recover before next interval
+                     break; 
+                }
+                
+                await atomicWrite(QUEUE_FILE, queueData);
+                currentQueueLength = queueData.length;
+            }
         }
     } catch (e) { log(`> [QUEUE] Error: ${e}`, "ERR"); }
     finally { release(); }
@@ -423,6 +449,7 @@ async function processPayoutQueue() {
 // WATCHDOG: Ensure queue processes even if triggers fail
 setInterval(processPayoutQueue, 20000);
 
+// --- QUEUE PAYOUTS (FIXED: MUTEX & RETRY) ---
 async function queuePayouts(frameId, result, bets, totalVolume) {
     log(`> [PAYOUT] Queuing payouts for Frame ${frameId}. Result: ${result}, Vol: ${totalVolume}`, "PAYOUT");
     if (totalVolume === 0) return;
@@ -430,13 +457,13 @@ async function queuePayouts(frameId, result, bets, totalVolume) {
 
     if (result === "FLAT") {
         const burnLamports = Math.floor((totalVolume * 0.99) * 1e9);
-        if (burnLamports > 0) queue.push({ type: 'FEE', recipients: [{ pubKey: FEE_WALLET.toString(), amount: burnLamports }] });
+        if (burnLamports > 0) queue.push({ type: 'FEE', recipients: [{ pubKey: FEE_WALLET.toString(), amount: burnLamports }], retries: 0 });
     } else {
         const feeLamports = Math.floor((totalVolume * FEE_PERCENT) * 1e9); 
         const upkeepLamports = Math.floor((totalVolume * UPKEEP_PERCENT) * 1e9); 
         
-        if (feeLamports > 0) queue.push({ type: 'FEE', recipients: [{ pubKey: FEE_WALLET.toString(), amount: feeLamports }] });
-        if (upkeepLamports > 0) queue.push({ type: 'FEE', recipients: [{ pubKey: UPKEEP_WALLET.toString(), amount: upkeepLamports }] });
+        if (feeLamports > 0) queue.push({ type: 'FEE', recipients: [{ pubKey: FEE_WALLET.toString(), amount: feeLamports }], retries: 0 });
+        if (upkeepLamports > 0) queue.push({ type: 'FEE', recipients: [{ pubKey: UPKEEP_WALLET.toString(), amount: upkeepLamports }], retries: 0 });
     }
 
     if (result !== "FLAT") {
@@ -476,19 +503,30 @@ async function queuePayouts(frameId, result, bets, totalVolume) {
                     const payoutLamports = Math.floor(potLamports * shareRatio);
                     if (payoutLamports > 5000) batchRecipients.push({ pubKey: winner.pubKey, amount: payoutLamports });
                 }
-                if (batchRecipients.length > 0) queue.push({ type: 'USER_PAYOUT', frameId: frameId, recipients: batchRecipients });
+                if (batchRecipients.length > 0) queue.push({ type: 'USER_PAYOUT', frameId: frameId, recipients: batchRecipients, retries: 0 });
             }
         }
     }
 
-    let existingQueue = [];
-    try { if (fsSync.existsSync(QUEUE_FILE)) existingQueue = JSON.parse(await fs.readFile(QUEUE_FILE, 'utf8')); } catch(e) {}
-    const newQueue = existingQueue.concat(queue);
-    await atomicWrite(QUEUE_FILE, newQueue);
-    currentQueueLength = newQueue.length;
+    // ACQUIRE MUTEX TO SAFELY WRITE QUEUE
+    const release = await payoutMutex.acquire();
+    try {
+        let existingQueue = [];
+        if (fsSync.existsSync(QUEUE_FILE)) {
+            try { existingQueue = JSON.parse(await fs.readFile(QUEUE_FILE, 'utf8')); } catch(e) {}
+        }
+        const newQueue = existingQueue.concat(queue);
+        await atomicWrite(QUEUE_FILE, newQueue);
+        currentQueueLength = newQueue.length;
+    } finally {
+        release();
+    }
+    
+    // TRIGGER PROCESSOR (It will acquire its own lock)
     processPayoutQueue();
 }
 
+// --- PROCESS REFUNDS (FIXED: MUTEX) ---
 async function processRefunds(frameId, bets) {
     log(`> [REFUND] Processing refunds for Frame ${frameId}. Count: ${bets.length}`, "REFUND");
     if (!houseKeypair || bets.length === 0) return;
@@ -501,18 +539,28 @@ async function processRefunds(frameId, bets) {
         totalFee += (bet.costSol * 0.01 * 1e9);
     });
     const queue = [];
-    if (totalFee > 0) queue.push({ type: 'FEE', recipients: [{ pubKey: FEE_WALLET.toString(), amount: Math.floor(totalFee) }] });
+    if (totalFee > 0) queue.push({ type: 'FEE', recipients: [{ pubKey: FEE_WALLET.toString(), amount: Math.floor(totalFee) }], retries: 0 });
     const recipients = Object.entries(refunds).map(([pub, amt]) => ({ pubKey: pub, amount: amt }));
     const BATCH_SIZE = 12;
     for (let i = 0; i < recipients.length; i += BATCH_SIZE) {
         const batch = recipients.slice(i, i + BATCH_SIZE);
-        queue.push({ type: 'USER_REFUND', frameId: frameId, recipients: batch }); 
+        queue.push({ type: 'USER_REFUND', frameId: frameId, recipients: batch, retries: 0 }); 
     }
-    let existingQueue = [];
-    try { if (fsSync.existsSync(QUEUE_FILE)) existingQueue = JSON.parse(await fs.readFile(QUEUE_FILE, 'utf8')); } catch(e) {}
-    const newQueue = existingQueue.concat(queue);
-    await atomicWrite(QUEUE_FILE, newQueue);
-    currentQueueLength = newQueue.length;
+
+    // ACQUIRE MUTEX TO SAFELY WRITE QUEUE
+    const release = await payoutMutex.acquire();
+    try {
+        let existingQueue = [];
+        if (fsSync.existsSync(QUEUE_FILE)) {
+             try { existingQueue = JSON.parse(await fs.readFile(QUEUE_FILE, 'utf8')); } catch(e) {}
+        }
+        const newQueue = existingQueue.concat(queue);
+        await atomicWrite(QUEUE_FILE, newQueue);
+        currentQueueLength = newQueue.length;
+    } finally {
+        release();
+    }
+    
     processPayoutQueue();
 }
 
@@ -663,7 +711,7 @@ async function updatePrice() {
             fetchedPrice = Number(p.price) * Math.pow(10, p.expo);
             priceFound = true;
         }
-    } catch (e) { log(`[ORACLE] Pyth Failed: ${e.message}`, "WARN"); }
+    } catch (e) { console.log(`[ORACLE] Pyth Failed: ${e.message}`); }
 
     if (!priceFound && COINGECKO_API_KEY) {
         try {
@@ -675,7 +723,7 @@ async function updatePrice() {
                 fetchedPrice = response.data.solana.usd;
                 priceFound = true;
             }
-        } catch (e) { log(`[ORACLE] CoinGecko Failed: ${e.message}`, "WARN"); }
+        } catch (e) { console.log(`[ORACLE] CoinGecko Failed: ${e.message}`); }
     }
 
     if (priceFound) {
@@ -768,7 +816,7 @@ async function updatePrice() {
 
 setInterval(updatePrice, 10000); 
 updatePrice(); 
-processPayoutQueue();
+// No explicit call to processPayoutQueue needed here as setInterval handles it and queuePayouts triggers it
 
 // --- CACHE GENERATION ---
 function updatePublicStateCache() {
@@ -871,10 +919,7 @@ app.get('/api/share-image', (req, res) => {
 // NEW ADMIN LOGS ENDPOINT
 app.get('/api/admin/logs', (req, res) => {
     const auth = req.headers['x-admin-secret'];
-    // Basic auth check (for simplicity using header like other admin endpoints)
-    // In production, robust auth is recommended.
     if (!auth || auth !== process.env.ADMIN_ACTION_PASSWORD) return res.status(403).json({ error: "UNAUTHORIZED" });
-    
     res.json({ logs: serverLogs });
 });
 
