@@ -37,7 +37,7 @@ const PAYOUT_MULTIPLIER = 0.94;
 const FEE_PERCENT = 0.0552; 
 const UPKEEP_PERCENT = 0.0048; // 0.48%
 const FRAME_DURATION = 15 * 60 * 1000; 
-const BACKEND_VERSION = "125.0"; // UPDATE: Payout Mutex & Retry Fix
+const BACKEND_VERSION = "126.0"; // UPDATE: Payout Queue Monitor & Logging
 
 const PRIORITY_FEE_UNITS = 50000; 
 
@@ -97,6 +97,8 @@ const HISTORY_FILE = path.join(DATA_DIR, 'history.json');
 const STATS_FILE = path.join(DATA_DIR, 'global_stats.json');
 const SIGS_FILE = path.join(DATA_DIR, 'signatures.log'); 
 const QUEUE_FILE = path.join(DATA_DIR, 'payout_queue.json'); 
+const PAYOUT_HISTORY_FILE = path.join(DATA_DIR, 'payout_history.json');
+const PAYOUT_MASTER_LOG = path.join(DATA_DIR, 'payout_master.log');
 
 log(`> [SYS] Persistence Root: ${DATA_DIR}`);
 if (!process.env.HELIUS_API_KEY) log("⚠️ [WARN] HELIUS_API_KEY is missing! RPC calls may fail.", "WARN");
@@ -171,6 +173,8 @@ let processedSignatures = new Set();
 let globalLeaderboard = [];
 let knownUsers = new Set(); 
 let currentQueueLength = 0; 
+// NEW: Payout History Array (for UI)
+let payoutHistory = [];
 
 // --- STATE CACHING ---
 let cachedPublicState = null;
@@ -189,6 +193,11 @@ function loadGlobalState() {
             const lines = fileContent.split('\n');
             lines.slice(-5000).forEach(line => { if(line.trim()) processedSignatures.add(line.trim()); });
         }
+        // Load Payout History for UI
+        if (fsSync.existsSync(PAYOUT_HISTORY_FILE)) {
+            payoutHistory = JSON.parse(fsSync.readFileSync(PAYOUT_HISTORY_FILE));
+        }
+        
         if (fsSync.existsSync(STATE_FILE)) {
             const savedState = JSON.parse(fsSync.readFileSync(STATE_FILE));
             gameState = { ...gameState, ...savedState };
@@ -338,7 +347,7 @@ function getCurrentWindowStart() {
     return start.getTime();
 }
 
-// --- PAYOUT PROCESSOR (UPDATED V125) ---
+// --- PAYOUT PROCESSOR (UPDATED WITH HISTORY LOGGING) ---
 async function processPayoutQueue() {
     const release = await payoutMutex.acquire();
     try {
@@ -357,7 +366,6 @@ async function processPayoutQueue() {
         
         while (queueData.length > 0) {
             const batch = queueData[0];
-            // Ensure retries property exists
             if (typeof batch.retries === 'undefined') batch.retries = 0;
 
             const { type, recipients, frameId } = batch;
@@ -368,6 +376,7 @@ async function processPayoutQueue() {
                 tx.add(priorityFeeIx);
                 let hasInstructions = false;
                 const validRecipients = [];
+                let totalBatchAmount = 0;
                 
                 if (type === 'USER_PAYOUT' || type === 'USER_REFUND') {
                     for (const item of recipients) {
@@ -378,9 +387,13 @@ async function processPayoutQueue() {
                             if (type === 'USER_REFUND' && entry.refundTx) continue;
                         }
                         validRecipients.push(item);
+                        totalBatchAmount += (item.amount || 0);
                     }
                 } else {
-                     recipients.forEach(r => validRecipients.push(r));
+                     recipients.forEach(r => {
+                         validRecipients.push(r);
+                         totalBatchAmount += (r.amount || 0);
+                     });
                 }
 
                 if (validRecipients.length > 0) {
@@ -396,6 +409,26 @@ async function processPayoutQueue() {
                     if (hasInstructions) {
                         const sig = await sendAndConfirmTransaction(connection, tx, [houseKeypair], { commitment: 'confirmed', maxRetries: 5 });
                         log(`> [TX] Batch Sent (${type}): ${sig}`, "TX");
+                        
+                        // LOG PAYOUT TO HISTORY
+                        const historyRecord = {
+                            timestamp: Date.now(),
+                            frameId: frameId || 'N/A',
+                            type: type,
+                            signature: sig,
+                            recipientCount: validRecipients.length,
+                            totalAmount: (totalBatchAmount / 1e9).toFixed(4)
+                        };
+                        
+                        // Update In-Memory
+                        payoutHistory.unshift(historyRecord);
+                        if (payoutHistory.length > 100) payoutHistory.pop();
+                        
+                        // Update Disk JSON
+                        await atomicWrite(PAYOUT_HISTORY_FILE, payoutHistory);
+                        
+                        // Append to Master Log
+                        await fs.appendFile(PAYOUT_MASTER_LOG, JSON.stringify(historyRecord) + '\n');
 
                         if (type === 'USER_PAYOUT') {
                             for (const item of validRecipients) {
@@ -417,27 +450,20 @@ async function processPayoutQueue() {
                     }
                 }
                 
-                // Success or Empty Batch -> Remove
                 queueData.shift();
                 await atomicWrite(QUEUE_FILE, queueData);
                 currentQueueLength = queueData.length;
 
             } catch (e) { 
                 log(`> [TX] Batch Failed: ${e.message}`, "ERR");
-                
-                // Increment retry logic
                 batch.retries = (batch.retries || 0) + 1;
-                
                 if (batch.retries >= 5) {
                      log(`> [QUEUE] Batch dropped after 5 retries.`, "ERR");
-                     queueData.shift(); // Drop
+                     queueData.shift(); 
                 } else {
-                     // Save state with new retry count
                      await atomicWrite(QUEUE_FILE, queueData);
-                     // Break loop to allow network/server to recover before next interval
                      break; 
                 }
-                
                 await atomicWrite(QUEUE_FILE, queueData);
                 currentQueueLength = queueData.length;
             }
@@ -449,7 +475,6 @@ async function processPayoutQueue() {
 // WATCHDOG: Ensure queue processes even if triggers fail
 setInterval(processPayoutQueue, 20000);
 
-// --- QUEUE PAYOUTS (FIXED: MUTEX & RETRY) ---
 async function queuePayouts(frameId, result, bets, totalVolume) {
     log(`> [PAYOUT] Queuing payouts for Frame ${frameId}. Result: ${result}, Vol: ${totalVolume}`, "PAYOUT");
     if (totalVolume === 0) return;
@@ -508,7 +533,6 @@ async function queuePayouts(frameId, result, bets, totalVolume) {
         }
     }
 
-    // ACQUIRE MUTEX TO SAFELY WRITE QUEUE
     const release = await payoutMutex.acquire();
     try {
         let existingQueue = [];
@@ -522,11 +546,9 @@ async function queuePayouts(frameId, result, bets, totalVolume) {
         release();
     }
     
-    // TRIGGER PROCESSOR (It will acquire its own lock)
     processPayoutQueue();
 }
 
-// --- PROCESS REFUNDS (FIXED: MUTEX) ---
 async function processRefunds(frameId, bets) {
     log(`> [REFUND] Processing refunds for Frame ${frameId}. Count: ${bets.length}`, "REFUND");
     if (!houseKeypair || bets.length === 0) return;
@@ -547,7 +569,6 @@ async function processRefunds(frameId, bets) {
         queue.push({ type: 'USER_REFUND', frameId: frameId, recipients: batch, retries: 0 }); 
     }
 
-    // ACQUIRE MUTEX TO SAFELY WRITE QUEUE
     const release = await payoutMutex.acquire();
     try {
         let existingQueue = [];
@@ -564,36 +585,29 @@ async function processRefunds(frameId, bets) {
     processPayoutQueue();
 }
 
+// ... (cancelCurrentFrameAndRefund, closeFrame, updatePrice UNCHANGED) ...
 async function cancelCurrentFrameAndRefund() {
     gameState.isPaused = true;
     gameState.isCancelled = true;
-    
     if (gameState.bets.length > 0) {
         log(`> [CANCEL] Performing Cancellation & Refund for frame ${gameState.candleStartTime}...`, "CANCEL");
         const betsToRefund = [...gameState.bets];
         const frameRecord = { id: gameState.candleStartTime, time: new Date(gameState.candleStartTime).toISOString(), result: "CANCELLED", totalSol: 0, winners: 0, payout: 0 };
-        
         historySummary.unshift(frameRecord);
         if (historySummary.length > 100) historySummary = historySummary.slice(0, 100);
         await atomicWrite(HISTORY_FILE, historySummary);
-
         gameState.bets = [];
         gameState.poolShares = { up: 50, down: 50 };
-        
         processRefunds(gameState.candleStartTime, betsToRefund);
     }
     await saveSystemState();
 }
 
-// DEADLOCK FIX: Removed Mutex acquisition inside this function
 async function closeFrame(closePrice, closeTime) {
-    // Note: stateMutex is already held by the caller (updatePrice)
     try {
         const frameId = gameState.candleStartTime; 
         log(`> [SYS] Closing Frame: ${frameId}`);
-
         await updateASDFPurchases();
-
         const openPrice = gameState.candleOpen;
         let result = "FLAT";
         if (closePrice > openPrice) result = "UP";
@@ -637,7 +651,6 @@ async function closeFrame(closePrice, closeTime) {
             result: result, sharesUp: realSharesUp, sharesDown: realSharesDown,
             totalSol: frameSol, winners: winnerCount, payout: payoutTotal
         };
-        
         historySummary.unshift(frameRecord);
         if (historySummary.length > 100) historySummary = historySummary.slice(0, 100);
         await atomicWrite(HISTORY_FILE, historySummary);
@@ -650,7 +663,6 @@ async function closeFrame(closePrice, closeTime) {
             else userPositions[bet.user].down += bet.shares;
             userPositions[bet.user].sol += bet.costSol;
         });
-
         const usersToUpdate = Object.entries(userPositions);
         const USER_IO_BATCH_SIZE = 20; 
         for (let i = 0; i < usersToUpdate.length; i += USER_IO_BATCH_SIZE) {
@@ -658,15 +670,12 @@ async function closeFrame(closePrice, closeTime) {
             await Promise.all(batch.map(async ([pubKey, pos]) => {
                 const userData = await getUser(pubKey);
                 userData.framesPlayed += 1;
-                
                 const rUp = Math.round(pos.up * 10000) / 10000;
                 const rDown = Math.round(pos.down * 10000) / 10000;
-
                 let userDir = "FLAT";
                 if (rUp > rDown) userDir = "UP";
                 else if (rDown > rUp) userDir = "DOWN";
                 if (rUp === rDown) userDir = "FLAT";
-
                 const outcome = (userDir !== "FLAT" && result !== "FLAT" && userDir === result) ? "WIN" : "LOSS";
                 if (outcome === "WIN") userData.wins += 1; else if (outcome === "LOSS") userData.losses += 1;
                 if (!userData.frameLog) userData.frameLog = {};
@@ -677,25 +686,19 @@ async function closeFrame(closePrice, closeTime) {
                 await saveUser(pubKey, userData);
             }));
         }
-
         processedSignatures.clear();
         await fs.writeFile(SIGS_FILE, '');
-
         updatePublicStateCache();
-        
-        // Advance State
         gameState.candleStartTime = closeTime;
         gameState.candleOpen = closePrice;
         gameState.poolShares = { up: 50, down: 50 }; 
         gameState.bets = []; 
         gameState.sharePriceHistory = [];
         gameState.isResetting = false; 
-        
         await saveSystemState();
-        
+        await queuePayouts(frameId, result, betsSnapshot, frameSol); // Use 'await' but it's fire-and-forget internally for mutex safety
     } catch(e) {
         log(`> [ERR] CloseFrame Failed: ${e.message}`, "ERR");
-        // Panic Failsafe: If logic fails, try to unstick by unsetting reset flag
         gameState.isResetting = false; 
     }
 }
@@ -703,7 +706,6 @@ async function closeFrame(closePrice, closeTime) {
 async function updatePrice() {
     let fetchedPrice = 0;
     let priceFound = false;
-
     try {
         const response = await axios.get(`${PYTH_HERMES_URL}?ids[]=${SOL_FEED_ID}`, { timeout: 2000 });
         if (response.data && response.data.parsed && response.data.parsed[0]) {
@@ -731,8 +733,6 @@ async function updatePrice() {
             gameState.price = fetchedPrice;
             gameState.lastPriceTimestamp = Date.now();
             const currentWindowStart = getCurrentWindowStart();
-
-            // RECOVERY MECHANISM FOR STUCK RESETTING STATE
             const frameEndTime = gameState.candleStartTime + FRAME_DURATION;
             if (gameState.isResetting && Date.now() > (frameEndTime + 60000)) {
                  log("⚠️ [FAILSAFE] RESETTING stuck > 1m. Refunds issued. Starting new frame.", "FAILSAFE");
@@ -749,9 +749,7 @@ async function updatePrice() {
                  updatePublicStateCache();
                  return;
             }
-
             if (gameState.isResetting) return;
-            
             if (gameState.isPaused) {
                 const timeRemaining = (gameState.candleStartTime + FRAME_DURATION) - Date.now();
                 if (!gameState.isCancelled && timeRemaining < 300000 && timeRemaining > 0) {
@@ -786,7 +784,6 @@ async function updatePrice() {
                 }
                 return;
             }
-
             if (currentWindowStart > gameState.candleStartTime) {
                 if (gameState.candleStartTime === 0) {
                     gameState.candleStartTime = currentWindowStart;
@@ -796,11 +793,9 @@ async function updatePrice() {
                     log(`> [SYS] Closing Frame: ${gameState.candleStartTime} @ $${fetchedPrice}`);
                     gameState.isResetting = true; 
                     await saveSystemState();
-                    // Calling closeFrame within the lock
                     await closeFrame(fetchedPrice, currentWindowStart);
                 }
             }
-
             const totalS = gameState.poolShares.up + gameState.poolShares.down;
             const pUp = (gameState.poolShares.up / totalS) * PRICE_SCALE;
             const pDown = (gameState.poolShares.down / totalS) * PRICE_SCALE;
@@ -813,10 +808,8 @@ async function updatePrice() {
     }
 }
 
-
 setInterval(updatePrice, 10000); 
 updatePrice(); 
-// No explicit call to processPayoutQueue needed here as setInterval handles it and queuePayouts triggers it
 
 // --- CACHE GENERATION ---
 function updatePublicStateCache() {
@@ -824,25 +817,20 @@ function updatePublicStateCache() {
     const priceChange = gameState.price - gameState.candleOpen;
     const percentChange = gameState.candleOpen ? (priceChange / gameState.candleOpen) * 100 : 0;
     const currentVolume = gameState.bets.reduce((acc, b) => acc + b.costSol, 0);
-
     const totalShares = gameState.poolShares.up + gameState.poolShares.down;
     const priceUp = (gameState.poolShares.up / totalShares) * PRICE_SCALE;
     const priceDown = (gameState.poolShares.down / totalShares) * PRICE_SCALE;
-
     const history = gameState.sharePriceHistory || [];
     const baseline = { up: 0.05, down: 0.05 };
     const oneMinAgo = history.find(x => x.t >= now - 60000) || baseline;
     const fiveMinAgo = history.find(x => x.t >= now - 300000) || baseline;
-
     function getPercentChange(current, old) { if (!old || old === 0) return 0; return ((current - old) / old) * 100; }
-
     const changes = {
         up1m: getPercentChange(priceUp, oneMinAgo.up),
         up5m: getPercentChange(priceUp, fiveMinAgo.up),
         down1m: getPercentChange(priceDown, oneMinAgo.down),
         down5m: getPercentChange(priceDown, fiveMinAgo.down),
     };
-    
     const uniqueUsers = new Set(gameState.bets.map(b => b.user)).size;
     const lastFramePot = historySummary.length > 0 ? historySummary[0].totalSol : 0;
 
@@ -859,12 +847,7 @@ function updatePublicStateCache() {
         isResetting: gameState.isResetting,
         isCancelled: gameState.isCancelled,
         broadcast: gameState.broadcast,
-        market: { 
-            priceUp, priceDown, 
-            sharesUp: gameState.poolShares.up, 
-            sharesDown: gameState.poolShares.down, 
-            changes 
-        },
+        market: { priceUp, priceDown, sharesUp: gameState.poolShares.up, sharesDown: gameState.poolShares.down, changes },
         history: historySummary,
         recentTrades: gameState.recentTrades,
         leaderboard: globalLeaderboard,
@@ -882,17 +865,14 @@ setInterval(updatePublicStateCache, 500);
 // --- ENDPOINTS ---
 app.get('/api/state', stateLimiter, async (req, res) => {
     if (!cachedPublicState) updatePublicStateCache();
-
     const response = { ...cachedPublicState };
     const now = new Date();
     const nextWindowStart = getCurrentWindowStart() + FRAME_DURATION;
     response.msUntilClose = nextWindowStart - now.getTime();
-
     const userKey = req.query.user;
     if (userKey && isValidSolanaAddress(userKey)) {
         const myStats = await getUser(userKey);
         response.userStats = myStats;
-
         const userBets = gameState.bets.filter(b => b.user === userKey);
         response.activePosition = {
             upShares: userBets.filter(b => b.direction === 'UP').reduce((a, b) => a + b.shares, 0),
@@ -902,25 +882,30 @@ app.get('/api/state', stateLimiter, async (req, res) => {
             wageredSol: userBets.reduce((a, b) => a + b.costSol, 0)
         };
     }
-
     res.json(response);
 });
 
-app.get('/api/image/fine', (req, res) => {
-    res.json({ image: cachedItsFineImage });
-});
-app.get('/api/image/over', (req, res) => {
-    res.json({ image: cachedItsOverImage });
-});
-app.get('/api/share-image', (req, res) => {
-    res.json({ image: cachedShareImage });
-});
+app.get('/api/image/fine', (req, res) => { res.json({ image: cachedItsFineImage }); });
+app.get('/api/image/over', (req, res) => { res.json({ image: cachedItsOverImage }); });
+app.get('/api/share-image', (req, res) => { res.json({ image: cachedShareImage }); });
 
-// NEW ADMIN LOGS ENDPOINT
+// NEW: ADMIN LOGS & PAYOUT MONITOR
 app.get('/api/admin/logs', (req, res) => {
     const auth = req.headers['x-admin-secret'];
     if (!auth || auth !== process.env.ADMIN_ACTION_PASSWORD) return res.status(403).json({ error: "UNAUTHORIZED" });
     res.json({ logs: serverLogs });
+});
+
+app.get('/api/admin/payouts', async (req, res) => {
+    const auth = req.headers['x-admin-secret'];
+    if (!auth || auth !== process.env.ADMIN_ACTION_PASSWORD) return res.status(403).json({ error: "UNAUTHORIZED" });
+    
+    let currentQueue = [];
+    if (fsSync.existsSync(QUEUE_FILE)) {
+        try { currentQueue = JSON.parse(fsSync.readFileSync(QUEUE_FILE, 'utf8')); } catch(e) {}
+    }
+    
+    res.json({ queue: currentQueue, history: payoutHistory });
 });
 
 app.post('/api/verify-bet', betLimiter, async (req, res) => {
@@ -929,11 +914,7 @@ app.post('/api/verify-bet', betLimiter, async (req, res) => {
     if (gameState.isCancelled) return res.status(400).json({ error: "MARKET_CANCELLED" });
 
     const { signature, direction, userPubKey } = req.body;
-    
-    if (!signature || !userPubKey || !isValidSolanaAddress(userPubKey) || !isValidSignature(signature)) {
-        return res.status(400).json({ error: "INVALID_DATA_FORMAT" });
-    }
-    
+    if (!signature || !userPubKey || !isValidSolanaAddress(userPubKey) || !isValidSignature(signature)) return res.status(400).json({ error: "INVALID_DATA_FORMAT" });
     if (processedSignatures.has(signature)) return res.status(400).json({ error: "DUPLICATE_TX_DETECTED" });
 
     let solAmount = 0;
@@ -967,14 +948,10 @@ app.post('/api/verify-bet', betLimiter, async (req, res) => {
         let price = 0.05; 
         if (direction === 'UP') price = (gameState.poolShares.up / totalShares) * PRICE_SCALE;
         else price = (gameState.poolShares.down / totalShares) * PRICE_SCALE;
-        
         if(price < 0.001) price = 0.001;
 
         const sharesReceived = solAmount / price;
-        
-        if (!Number.isFinite(sharesReceived) || sharesReceived <= 0) {
-             return res.status(500).json({ error: "CALCULATION_ERROR" });
-        }
+        if (!Number.isFinite(sharesReceived) || sharesReceived <= 0) return res.status(500).json({ error: "CALCULATION_ERROR" });
 
         if (direction === 'UP') gameState.poolShares.up += sharesReceived;
         else gameState.poolShares.down += sharesReceived;
@@ -996,13 +973,10 @@ app.post('/api/verify-bet', betLimiter, async (req, res) => {
         globalStats.totalVolume += solAmount;
         processedSignatures.add(signature);
         await fs.appendFile(path.join(DATA_DIR, 'signatures.log'), signature + '\n');
-
         updatePublicStateCache();
-
         await saveSystemState();
         log(`> [TRADE] ${userPubKey.slice(0,6)} bought ${sharesReceived.toFixed(2)} ${direction} for ${solAmount} SOL`, "TRADE");
         res.json({ success: true, shares: sharesReceived, price: price });
-
     } catch (e) { 
         log(`> [ERR] Trade Error: ${e}`, "ERR");
         res.status(500).json({ error: "STATE_ERROR" }); 
@@ -1012,7 +986,6 @@ app.post('/api/verify-bet', betLimiter, async (req, res) => {
 app.post('/api/admin/toggle-pause', async (req, res) => {
     const auth = req.headers['x-admin-secret'];
     if (!auth || auth !== process.env.ADMIN_ACTION_PASSWORD) return res.status(403).json({ error: "UNAUTHORIZED" });
-
     const release = await stateMutex.acquire();
     try {
         gameState.isPaused = !gameState.isPaused;
@@ -1039,9 +1012,7 @@ app.post('/api/admin/cancel-frame', async (req, res) => {
 app.post('/api/admin/broadcast', async (req, res) => {
     const auth = req.headers['x-admin-secret'];
     if (!auth || auth !== process.env.ADMIN_ACTION_PASSWORD) return res.status(403).json({ error: "UNAUTHORIZED" });
-
     const { message, isActive } = req.body;
-    
     const release = await stateMutex.acquire();
     try {
         gameState.broadcast = { message: message || "", isActive: !!isActive };
