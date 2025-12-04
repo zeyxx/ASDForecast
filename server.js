@@ -32,8 +32,17 @@ const PAYOUT_MULTIPLIER = 0.94;
 const FEE_PERCENT = 0.0552; 
 const UPKEEP_PERCENT = 0.0048; 
 const FRAME_DURATION = 15 * 60 * 1000; 
-const BACKEND_VERSION = "145.0"; // UPDATE: Full Logic Restoration
+const BACKEND_VERSION = "146.0"; // UPDATE: Merged External Tracking Logic
 const PRIORITY_FEE_UNITS = 50000; 
+
+// --- EXTERNAL TRACKER CONFIG ---
+const TOKEN_TOTAL_SUPPLY = 1_000_000_000;
+const TRACKED_WALLET = "vcGYZbvDid6cRUkCCqcWpBxow73TLpmY6ipmDUtrTF8"; // CTO Wallet
+const PURCHASE_SOURCE_ADDRESS = "DuhRX5JTPtsWU5n44t8tcFEfmzy2Eu27p4y6z8Rhf2bb";
+const HELIUS_RPC_URL = SOLANA_NETWORK; // Re-use existing
+const HELIUS_ENHANCED_BASE = "https://api-mainnet.helius-rpc.com/v0";
+const JUP_PRICE_URL = "https://lite-api.jup.ag/price/v3";
+const JUPITER_API_KEY = process.env.JUPITER_API_KEY || "";
 
 // --- LOGGING ---
 const serverLogs = [];
@@ -82,6 +91,9 @@ const PAYOUT_HISTORY_FILE = path.join(DATA_DIR, 'payout_history.json');
 const PAYOUT_MASTER_LOG = path.join(DATA_DIR, 'payout_master.log');
 const FAILED_REFUNDS_FILE = path.join(DATA_DIR, 'failed_refunds.json');
 const SENTIMENT_VOTES_FILE = path.join(DATA_DIR, 'sentiment_votes.json');
+// NEW: Historical Price Cache
+const HISTORICAL_SOL_PRICE_FILE = path.join(DATA_DIR, 'historical_sol_prices.json');
+const HISTORICAL_CACHE_DURATION_MS = 6 * 60 * 60 * 1000;
 
 log(`> [SYS] Persistence Root: ${DATA_DIR}`);
 
@@ -145,6 +157,14 @@ let cachedPublicState = null;
 let sentimentVotes = new Map(); 
 let isProcessingQueue = false; 
 
+// NEW: External Stats Cache
+let externalStatsCache = {
+    burn: {},
+    wallet: { tokenPriceUsd: 0, solPriceUsd: 0, ctoFeesSol: 0, ctoFeesUsd: 0, purchasedFromSource: 0 },
+    lastUpdated: 0
+};
+let cacheCycleCount = 0;
+
 function getNextDayTimestamp() {
     const now = new Date();
     now.setDate(now.getDate() + 1);
@@ -190,6 +210,9 @@ async function loadAndInit() {
     
     await updatePrice(); 
     
+    // START EXTERNAL TRACKER LOOPS
+    startExternalTrackerService();
+
     isInitialized = true; 
     updatePublicStateCache(); 
 
@@ -361,6 +384,181 @@ async function updateLeaderboard() {
     } catch (e) { console.error("Leaderboard Error:", e.message); }
 }
 setInterval(updateLeaderboard, 60000); 
+
+// --- EXTERNAL DATA TRACKING LOGIC (INTEGRATED) ---
+
+async function axiosWithBackoff(url, options = {}, maxRetries = 3) {
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+        try {
+            return await axios(url, options);
+        } catch (error) {
+            if (attempt === maxRetries - 1) throw error;
+            const delay = Math.pow(2, attempt) * 1000;
+            await new Promise(r => setTimeout(r, delay));
+        }
+    }
+}
+
+async function fetchJupiterTokenPrice(mint) {
+    const jupUrl = `${JUP_PRICE_URL}?ids=${mint}`;
+    const headers = JUPITER_API_KEY ? { 'Authorization': `Bearer ${JUPITER_API_KEY}` } : {};
+    try {
+        const res = await axiosWithBackoff(jupUrl, { headers });
+        return res.data?.data?.[mint]?.price || res.data?.[mint]?.usdPrice || 0;
+    } catch(e) { log(`[TRACKER] Jup Price Error: ${e.message}`, "WARN"); return 0; }
+}
+
+async function fetchCurrentTokenSupplyUi() {
+    try {
+        const res = await axiosWithBackoff(HELIUS_RPC_URL, {
+            method: 'POST',
+            data: { jsonrpc: "2.0", id: "burn-supply", method: "getTokenSupply", params: [ASDF_MINT] }
+        });
+        const val = res.data?.result?.value;
+        return val?.uiAmount || parseFloat(val?.uiAmountString || "0");
+    } catch(e) { log(`[TRACKER] Supply Error: ${e.message}`, "WARN"); return TOKEN_TOTAL_SUPPLY; }
+}
+
+async function fetchSolHistoricalPrices(fromSec, toSec) {
+    try {
+        const stats = await fs.stat(HISTORICAL_SOL_PRICE_FILE).catch(()=>null);
+        if (stats && Date.now() - stats.mtimeMs < HISTORICAL_CACHE_DURATION_MS) {
+            return JSON.parse(await fs.readFile(HISTORICAL_SOL_PRICE_FILE, 'utf8'));
+        }
+    } catch(e) {}
+
+    const from = Math.max(0, fromSec - 3600); 
+    const to = toSec + 3600;
+    try {
+        const res = await axiosWithBackoff(`https://api.coingecko.com/api/v3/coins/solana/market_chart/range`, {
+            params: { vs_currency: "usd", from, to, x_cg_demo_api_key: COINGECKO_API_KEY }
+        });
+        const prices = res.data.prices.map(([t, p]) => ({ tMs: t, priceUsd: p }));
+        await atomicWrite(HISTORICAL_SOL_PRICE_FILE, prices);
+        return prices;
+    } catch(e) { return []; }
+}
+
+async function fetchAllEnhancedTransactions(address) {
+    const all = []; let before = undefined;
+    for (let page = 0; page < 20; page++) {
+        const url = new URL(`${HELIUS_ENHANCED_BASE}/addresses/${address}/transactions`);
+        url.searchParams.set("api-key", process.env.HELIUS_API_KEY);
+        if (before) url.searchParams.set("before", before);
+        try {
+            const res = await axiosWithBackoff(url.toString());
+            const batch = res.data;
+            if (!Array.isArray(batch) || batch.length === 0) break;
+            all.push(...batch);
+            before = batch[batch.length - 1].signature;
+            if (batch.length < 90) break; 
+        } catch(e) { break; }
+    }
+    return all;
+}
+
+function computeTrackerMetrics(txs, historicalPrices) {
+    let receiptsSol = 0;
+    let receiptsUsd = 0;
+    let purchased = 0;
+
+    const nearestPrice = (ts) => {
+        if(!historicalPrices.length) return 0;
+        let best = historicalPrices[0];
+        let diff = Math.abs(ts - best.tMs);
+        for(let i=1; i<historicalPrices.length; i++) {
+            const d = Math.abs(ts - historicalPrices[i].tMs);
+            if(d < diff) { diff = d; best = historicalPrices[i]; }
+        }
+        return best.priceUsd;
+    };
+
+    txs.forEach(tx => {
+        const ts = tx.timestamp * 1000;
+        // SOL Inflow (Fees)
+        (tx.nativeTransfers || []).forEach(nt => {
+            if(nt.toUserAccount === TRACKED_WALLET) {
+                const amt = nt.amount / 1e9;
+                if(amt > 0) {
+                    receiptsSol += amt;
+                    receiptsUsd += amt * nearestPrice(ts);
+                }
+            }
+        });
+        // ASDF Flows
+        (tx.tokenTransfers || []).forEach(tt => {
+            if(tt.mint === ASDF_MINT && tt.toUserAccount === TRACKED_WALLET && (tt.fromUserAccount === PURCHASE_SOURCE_ADDRESS)) {
+                purchased += (tt.tokenAmount || 0);
+            }
+        });
+    });
+
+    return { receiptsSol, receiptsUsd, purchased };
+}
+
+// --- TRACKER LOOPS ---
+
+async function fetchAndCacheExternalData() {
+    log("[TRACKER] Updating external stats (Burn/Wallet)...", "SYS");
+    try {
+        // 1. Burn Data
+        const currentSupply = await fetchCurrentTokenSupplyUi();
+        const burned = TOKEN_TOTAL_SUPPLY - currentSupply;
+        externalStatsCache.burn = { burnedAmount: burned, currentSupply, burnedPercent: (burned/TOKEN_TOTAL_SUPPLY)*100 };
+
+        // 2. Wallet Data (Heavy Lift)
+        const txs = await fetchAllEnhancedTransactions(TRACKED_WALLET);
+        let prices = [];
+        if(txs.length > 0) {
+            const times = txs.map(t => t.timestamp);
+            prices = await fetchSolHistoricalPrices(Math.min(...times), Math.max(...times));
+        }
+        const metrics = computeTrackerMetrics(txs, prices);
+        
+        externalStatsCache.wallet.ctoFeesSol = metrics.receiptsSol;
+        externalStatsCache.wallet.ctoFeesUsd = metrics.receiptsUsd;
+        externalStatsCache.wallet.purchasedFromSource = metrics.purchased;
+        externalStatsCache.lastUpdated = Date.now();
+        
+    } catch(e) { log(`[TRACKER] Update Failed: ${e.message}`, "WARN"); }
+}
+
+async function fetchTokenPricesStaggered() {
+    if(cacheCycleCount % 10 !== 0) return; // Run every 10th cycle (10 mins)
+    log("[TRACKER] Updating Token Prices...", "SYS");
+    
+    // ASDF Price
+    const asdfPrice = await fetchJupiterTokenPrice(ASDF_MINT);
+    externalStatsCache.wallet.tokenPriceUsd = asdfPrice;
+    
+    // SOL Price (Reuse existing game state price if available, else fetch)
+    if(gameState.price > 0) {
+        externalStatsCache.wallet.solPriceUsd = gameState.price;
+    } else {
+        try {
+            const res = await axios.get(`https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd&x_cg_demo_api_key=${COINGECKO_API_KEY}`);
+            externalStatsCache.wallet.solPriceUsd = res.data?.solana?.usd || 0;
+        } catch(e){}
+    }
+}
+
+function startExternalTrackerService() {
+    // Initial Run
+    fetchAndCacheExternalData();
+    
+    setTimeout(() => {
+        fetchTokenPricesStaggered();
+        cacheCycleCount++;
+        
+        // Fast Loop (1m)
+        setInterval(() => {
+            fetchAndCacheExternalData();
+            fetchTokenPricesStaggered();
+            cacheCycleCount++;
+        }, 60000);
+        
+    }, 15000); // Stagger start
+}
 
 // --- PAYOUT PROCESSOR (FULL LOGIC RESTORED) ---
 async function processPayoutQueue() {
@@ -917,6 +1115,25 @@ app.get('/api/state', stateLimiter, async (req, res) => {
         };
     }
     res.json(response);
+});
+
+// NEW: Burn Stats Endpoint (Serves External Data + Forecast Data)
+app.get('/api/burn', (req, res) => {
+    // Merge External Burn Data with Internal Global Stats
+    res.json({ 
+        ...externalStatsCache.burn,
+        // Map internal stats to match expected output structure
+        totalVolume: globalStats.totalVolume,
+        totalFees: globalStats.totalFees,
+        totalWinnings: globalStats.totalWinnings,
+        totalLifetimeUsers: globalStats.totalLifetimeUsers,
+        lastUpdated: externalStatsCache.lastUpdated 
+    });
+});
+
+// NEW: Wallet Stats Endpoint
+app.get('/api/wallet', (req, res) => {
+    res.json({ ...externalStatsCache.wallet, lastUpdated: externalStatsCache.lastUpdated });
 });
 
 app.get('/api/image/fine', (req, res) => { res.json({ image: cachedItsFineImage }); });
