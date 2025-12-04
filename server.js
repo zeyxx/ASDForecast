@@ -37,7 +37,7 @@ const PAYOUT_MULTIPLIER = 0.94;
 const FEE_PERCENT = 0.0552; 
 const UPKEEP_PERCENT = 0.0048; // 0.48%
 const FRAME_DURATION = 15 * 60 * 1000; 
-const BACKEND_VERSION = "121.0"; // UPDATE: Refund-based Failsafe
+const BACKEND_VERSION = "122.0"; // UPDATE: Broadcast & Enhanced Logging
 
 const PRIORITY_FEE_UNITS = 50000; 
 
@@ -150,7 +150,8 @@ let gameState = {
     sharePriceHistory: [],
     isPaused: false,
     isResetting: false,
-    isCancelled: false
+    isCancelled: false,
+    broadcast: { message: "", isActive: false } // NEW: Broadcast State
 };
 let historySummary = [];
 let globalStats = { totalVolume: 0, totalFees: 0, totalASDF: 0, totalWinnings: 0, totalLifetimeUsers: 0, lastASDFSignature: null };
@@ -180,6 +181,8 @@ function loadGlobalState() {
             const savedState = JSON.parse(fsSync.readFileSync(STATE_FILE));
             gameState = { ...gameState, ...savedState };
             gameState.isResetting = false; 
+            // Ensure broadcast structure exists if loading old state
+            if (!gameState.broadcast) gameState.broadcast = { message: "", isActive: false };
             
             if (gameState.candleStartTime > 0) {
                 const currentFrameFile = path.join(FRAMES_DIR, `frame_${gameState.candleStartTime}.json`);
@@ -190,6 +193,7 @@ function loadGlobalState() {
             }
         }
         
+        console.log("> [SYS] Loading user registry...");
         const userFiles = fsSync.readdirSync(USERS_DIR);
         userFiles.forEach(f => {
             if(f.startsWith('user_') && f.endsWith('.json')) {
@@ -219,7 +223,8 @@ async function saveSystemState() {
         isPaused: gameState.isPaused,
         isResetting: gameState.isResetting,
         isCancelled: gameState.isCancelled,
-        lastPriceTimestamp: gameState.lastPriceTimestamp
+        lastPriceTimestamp: gameState.lastPriceTimestamp,
+        broadcast: gameState.broadcast
     });
     await atomicWrite(STATS_FILE, globalStats);
 
@@ -280,7 +285,10 @@ async function updateASDFPurchases() {
             const postAmount = postBal?.uiTokenAmount.uiAmount || 0;
             if (postAmount > preAmount) newPurchasedAmount += (postAmount - preAmount);
         }
-        if (newPurchasedAmount > 0) globalStats.totalASDF += newPurchasedAmount;
+        if (newPurchasedAmount > 0) {
+             globalStats.totalASDF += newPurchasedAmount;
+             console.log(`> [ASDF] Detected Buyback: +${newPurchasedAmount.toFixed(2)} ASDF`);
+        }
     } catch (e) { console.error("> [ASDF] History Check Failed:", e.message); }
 }
 
@@ -305,6 +313,7 @@ async function updateLeaderboard() {
         }
         leaders.sort((a, b) => b.totalWon - a.totalWon);
         globalLeaderboard = leaders.slice(0, 5); 
+        console.log(`> [LEADERBOARD] Updated. Top Degen: ${globalLeaderboard[0]?.pubKey || 'None'}`);
     } catch (e) { console.error("Leaderboard Error:", e.message); }
 }
 setInterval(updateLeaderboard, 60000); 
@@ -370,7 +379,7 @@ async function processPayoutQueue() {
 
                     if (hasInstructions) {
                         const sig = await sendAndConfirmTransaction(connection, tx, [houseKeypair], { commitment: 'confirmed', maxRetries: 5 });
-                        console.log(`> [QUEUE] Batch Sent: ${sig}`);
+                        console.log(`> [TX] Batch Sent (${type}): ${sig}`);
 
                         if (type === 'USER_PAYOUT') {
                             for (const item of validRecipients) {
@@ -391,7 +400,7 @@ async function processPayoutQueue() {
                         }
                     }
                 }
-            } catch (e) { console.error(`> [QUEUE] Batch Failed: ${e.message}`); }
+            } catch (e) { console.error(`> [TX] Batch Failed: ${e.message}`); }
             queueData.shift();
             await atomicWrite(QUEUE_FILE, queueData);
             currentQueueLength = queueData.length;
@@ -401,6 +410,7 @@ async function processPayoutQueue() {
 }
 
 async function queuePayouts(frameId, result, bets, totalVolume) {
+    console.log(`> [PAYOUT] Queuing payouts for Frame ${frameId}. Result: ${result}, Vol: ${totalVolume}`);
     if (totalVolume === 0) return;
     const queue = []; 
 
@@ -466,6 +476,7 @@ async function queuePayouts(frameId, result, bets, totalVolume) {
 }
 
 async function processRefunds(frameId, bets) {
+    console.log(`> [REFUND] Processing refunds for Frame ${frameId}. Count: ${bets.length}`);
     if (!houseKeypair || bets.length === 0) return;
     const refunds = {};
     let totalFee = 0;
@@ -626,7 +637,7 @@ async function updatePrice() {
             fetchedPrice = Number(p.price) * Math.pow(10, p.expo);
             priceFound = true;
         }
-    } catch (e) { console.log(`Pyth Failed: ${e.message}`); }
+    } catch (e) { console.log(`[ORACLE] Pyth Failed: ${e.message}`); }
 
     if (!priceFound && COINGECKO_API_KEY) {
         try {
@@ -638,7 +649,7 @@ async function updatePrice() {
                 fetchedPrice = response.data.solana.usd;
                 priceFound = true;
             }
-        } catch (e) { console.log(`CoinGecko Failed: ${e.message}`); }
+        } catch (e) { console.log(`[ORACLE] CoinGecko Failed: ${e.message}`); }
     }
 
     if (priceFound) {
@@ -647,7 +658,7 @@ async function updatePrice() {
             gameState.lastPriceTimestamp = Date.now();
             const currentWindowStart = getCurrentWindowStart();
 
-            // RECOVERY MECHANISM FOR STUCK RESETTING STATE (NEW)
+            // RECOVERY MECHANISM FOR STUCK RESETTING STATE
             const frameEndTime = gameState.candleStartTime + FRAME_DURATION;
             // If stuck in Resetting > 1 minute after close, trigger full REFUND and move on.
             if (gameState.isResetting && Date.now() > (frameEndTime + 60000)) {
@@ -658,15 +669,15 @@ async function updatePrice() {
                  
                  // 2. Advance State (Unpause & Reset flags)
                  gameState.isResetting = false; 
-                 gameState.isPaused = false; // Force unpause
-                 gameState.isCancelled = false; // Clear cancelled flag for new frame
+                 gameState.isPaused = false; 
+                 gameState.isCancelled = false; 
                  
                  // 3. Set New Frame Times
                  gameState.candleStartTime = currentWindowStart;
                  gameState.candleOpen = fetchedPrice;
-                 gameState.poolShares = { up: 50, down: 50 }; // Reset pool
-                 gameState.bets = []; // Ensure bets are clear (cancelCurrentFrameAndRefund does this, but safety first)
-                 gameState.sharePriceHistory = []; // Reset chart
+                 gameState.poolShares = { up: 50, down: 50 }; 
+                 gameState.bets = []; 
+                 gameState.sharePriceHistory = [];
                  
                  await saveSystemState();
                  updatePublicStateCache();
@@ -678,7 +689,7 @@ async function updatePrice() {
             if (gameState.isPaused) {
                 const timeRemaining = (gameState.candleStartTime + FRAME_DURATION) - Date.now();
                 if (!gameState.isCancelled && timeRemaining < 300000 && timeRemaining > 0) {
-                    console.log("⚠️ Auto-cancelling due to prolonged pause...");
+                    console.log("⚠️ [AUTO] Auto-cancelling due to prolonged pause...");
                     await cancelCurrentFrameAndRefund(); 
                     return;
                 }
@@ -716,6 +727,7 @@ async function updatePrice() {
                     gameState.candleOpen = fetchedPrice;
                     await saveSystemState();
                 } else {
+                    console.log(`> [SYS] Closing Frame: ${gameState.candleStartTime} @ $${fetchedPrice}`);
                     gameState.isResetting = true; 
                     await saveSystemState();
                     closeFrame(fetchedPrice, currentWindowStart);
@@ -779,6 +791,7 @@ function updatePublicStateCache() {
         isPaused: gameState.isPaused,
         isResetting: gameState.isResetting,
         isCancelled: gameState.isCancelled,
+        broadcast: gameState.broadcast,
         market: { 
             priceUp, priceDown, 
             sharesUp: gameState.poolShares.up, 
@@ -826,7 +839,6 @@ app.get('/api/state', stateLimiter, async (req, res) => {
     res.json(response);
 });
 
-// NEW ENDPOINTS FOR STATUS IMAGES
 app.get('/api/image/fine', (req, res) => {
     res.json({ image: cachedItsFineImage });
 });
@@ -914,6 +926,7 @@ app.post('/api/verify-bet', betLimiter, async (req, res) => {
         updatePublicStateCache();
 
         await saveSystemState();
+        console.log(`> [TRADE] ${userPubKey.slice(0,6)} bought ${sharesReceived.toFixed(2)} ${direction} for ${solAmount} SOL`);
         res.json({ success: true, shares: sharesReceived, price: price });
 
     } catch (e) { console.error(e); res.status(500).json({ error: "STATE_ERROR" }); } finally { release(); }
@@ -941,6 +954,24 @@ app.post('/api/admin/cancel-frame', async (req, res) => {
     try {
         await cancelCurrentFrameAndRefund();
         res.json({ success: true, message: "Frame Cancelled. Market Paused." });
+    } catch (e) { console.error(e); res.status(500).json({ error: "ADMIN_ERROR" }); } 
+    finally { release(); }
+});
+
+// NEW ADMIN ENDPOINT: BROADCAST
+app.post('/api/admin/broadcast', async (req, res) => {
+    const auth = req.headers['x-admin-secret'];
+    if (!auth || auth !== process.env.ADMIN_ACTION_PASSWORD) return res.status(403).json({ error: "UNAUTHORIZED" });
+
+    const { message, isActive } = req.body;
+    
+    const release = await stateMutex.acquire();
+    try {
+        gameState.broadcast = { message: message || "", isActive: !!isActive };
+        await saveSystemState();
+        updatePublicStateCache(); // Immediate cache update
+        console.log(`> [ADMIN] Broadcast updated: "${message}" (Active: ${isActive})`);
+        res.json({ success: true, broadcast: gameState.broadcast });
     } catch (e) { console.error(e); res.status(500).json({ error: "ADMIN_ERROR" }); } 
     finally { release(); }
 });

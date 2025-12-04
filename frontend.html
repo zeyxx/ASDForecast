@@ -1,4 +1,4 @@
-<!-- ASDForecast v112.0 // UI: LAST FRAME IMAGE & LAYOUT -->
+<!-- ASDForecast v112.1 // UI: ADMIN BROADCAST -->
 
 <!-- Dependencies -->
 <script src="https://cdn.tailwindcss.com"></script>
@@ -63,6 +63,15 @@
     .history-expanded::-webkit-scrollbar { width: 8px; }
     .history-expanded::-webkit-scrollbar-track { background: #2a1005; }
     .history-expanded::-webkit-scrollbar-thumb { background: #ea580c; border-radius: 4px; }
+
+    /* BROADCAST STYLE */
+    .broadcast-box {
+        background: rgba(251, 146, 60, 0.1);
+        border: 1px solid #ea580c;
+        color: #fdba74;
+        animation: pulse-border 2s infinite;
+    }
+    @keyframes pulse-border { 0% { border-color: #ea580c; } 50% { border-color: #fff7ed; } 100% { border-color: #ea580c; } }
 </style>
 
 <div id="asd-app">
@@ -79,6 +88,11 @@
                 </div>
             </div>
             <div class="flex items-center gap-4">
+                <!-- NEW: ADMIN BROADCAST CONTAINER -->
+                <div id="admin-broadcast-container" class="hidden broadcast-box px-4 py-2 rounded text-xs font-mono font-bold uppercase tracking-wide">
+                    📢 <span id="broadcast-text"></span>
+                </div>
+
                 <div class="flex flex-col items-end">
                     <div id="top-status-indicator" class="flex items-center gap-2 text-xs font-mono bg-black/40 px-3 py-2 rounded border border-red-900/50 text-red-500 transition-colors duration-500">
                         <span id="status-dot" class="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span>
@@ -268,7 +282,7 @@
                 <div class="mt-6 border-t-2 border-red-900/50 pt-4 bg-red-900/10 p-4 rounded"><strong class="text-red-500 block mb-1 text-lg">⚠️ DISCLAIMER & RISK WARNING</strong><p class="text-xs text-orange-200 leading-relaxed">This platform is currently LIVE on Solana Mainnet. The operators are not responsible for lost funds, smart contract errors, oracle latency, or network failures. <br><br><strong>PREDICT RESPONSIBLY:</strong> Never wager funds you cannot afford to lose. This is an experimental technology demonstration.</p></div>
             </div>
         </div>
-        <div class="text-center text-xs text-gray-500 font-mono pt-2 border-t border-orange-900/50"><span class="text-orange-400">Frontend v112.0</span> | Backend <span id="backend-version">v---</span></div>
+        <div class="text-center text-xs text-gray-500 font-mono pt-2 border-t border-orange-900/50"><span class="text-orange-400">Frontend v112.1</span> | Backend <span id="backend-version">v---</span></div>
     </div>
 
     <!-- SHARE MODAL -->
@@ -344,7 +358,9 @@
             globalLastPayout: document.getElementById('link-last-payout'), // Changed ID to target anchor tag
             globalWinnings: document.getElementById('global-winnings'),
             globalLifetimeUsers: document.getElementById('global-lifetime-users'),
-            lastFrameImg: document.getElementById('last-frame-img')
+            lastFrameImg: document.getElementById('last-frame-img'),
+            broadcastContainer: document.getElementById('admin-broadcast-container'),
+            broadcastText: document.getElementById('broadcast-text')
         };
 
         if(ui.btnInc) ui.btnInc.onclick = () => adjustQty(1);
@@ -707,6 +723,13 @@
                     const statusIcon = data.payoutQueueLength === 0 ? "✅" : "⏳";
                     // Using innerText preserves the styling of the anchor tag
                     ui.globalLastPayout.innerText = `${statusIcon} ${data.lastFramePot.toFixed(2)} SOL`;
+                }
+
+                if (data.broadcast && data.broadcast.isActive && data.broadcast.message) {
+                    ui.broadcastContainer.classList.remove('hidden');
+                    ui.broadcastText.innerText = data.broadcast.message;
+                } else {
+                    ui.broadcastContainer.classList.add('hidden');
                 }
 
                 if(data.userStats) {
