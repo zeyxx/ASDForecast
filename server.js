@@ -32,7 +32,7 @@ const PAYOUT_MULTIPLIER = 0.94;
 const FEE_PERCENT = 0.0552; 
 const UPKEEP_PERCENT = 0.0048; 
 const FRAME_DURATION = 15 * 60 * 1000; 
-const BACKEND_VERSION = "141.1"; // HOTFIX: feeAmt ReferenceError
+const BACKEND_VERSION = "141.2"; // FIX: isProcessingQueue Scope
 const PRIORITY_FEE_UNITS = 50000; 
 
 // --- LOGGING ---
@@ -141,8 +141,8 @@ let knownUsers = new Set();
 let currentQueueLength = 0; 
 let payoutHistory = [];
 let cachedPublicState = null;
-let sentimentVotes = new Map();
-let isProcessingQueue = false;
+let sentimentVotes = new Map(); 
+let isProcessingQueue = false; // MOVED HERE: Global scope initialization
 
 function getNextHourTimestamp() {
     const now = new Date();
@@ -391,9 +391,11 @@ async function queuePayouts(frameId, result, bets, totalVolume) {
     } else {
         const feeLamports = Math.floor((totalVolume * FEE_PERCENT) * 1e9); 
         const upkeepLamports = Math.floor((totalVolume * UPKEEP_PERCENT) * 1e9); 
+        
         if (feeLamports > 0) queue.push({ type: 'FEE', recipients: [{ pubKey: FEE_WALLET.toString(), amount: feeLamports }], retries: 0 });
         if (upkeepLamports > 0) queue.push({ type: 'FEE', recipients: [{ pubKey: UPKEEP_WALLET.toString(), amount: upkeepLamports }], retries: 0 });
     }
+
     if (result !== "FLAT") {
         const potLamports = Math.floor((totalVolume * 0.94) * 1e9);
         const userPositions = {};
@@ -402,8 +404,10 @@ async function queuePayouts(frameId, result, bets, totalVolume) {
             if (bet.direction === 'UP') userPositions[bet.user].up += bet.shares;
             else userPositions[bet.user].down += bet.shares;
         });
+
         let totalWinningShares = 0;
         const eligibleWinners = [];
+
         for (const [pubKey, pos] of Object.entries(userPositions)) {
             const rUp = Math.round(pos.up * 10000) / 10000;
             const rDown = Math.round(pos.down * 10000) / 10000;
@@ -411,12 +415,14 @@ async function queuePayouts(frameId, result, bets, totalVolume) {
             if (rUp > rDown) userDir = "UP";
             else if (rDown > rUp) userDir = "DOWN";
             if (pos.up === pos.down) userDir = "FLAT"; 
+
             if (userDir === result) {
                 const sharesHeld = result === "UP" ? pos.up : pos.down;
                 totalWinningShares += sharesHeld;
                 eligibleWinners.push({ pubKey, sharesHeld });
             }
         }
+
         if (totalWinningShares > 0) {
             const BATCH_SIZE = 12; 
             for (let i = 0; i < eligibleWinners.length; i += BATCH_SIZE) {
@@ -431,6 +437,7 @@ async function queuePayouts(frameId, result, bets, totalVolume) {
             }
         }
     }
+
     const release = await payoutMutex.acquire();
     try {
         let existingQueue = [];
@@ -439,6 +446,7 @@ async function queuePayouts(frameId, result, bets, totalVolume) {
         await atomicWrite(QUEUE_FILE, newQueue);
         currentQueueLength = newQueue.length;
     } finally { release(); }
+    
     processPayoutQueue();
 }
 
@@ -461,6 +469,7 @@ async function processRefunds(frameId, bets) {
         const batch = recipients.slice(i, i + BATCH_SIZE);
         queue.push({ type: 'USER_REFUND', frameId: frameId, recipients: batch, retries: 0 }); 
     }
+
     const release = await payoutMutex.acquire();
     try {
         let existingQueue = [];
@@ -469,6 +478,7 @@ async function processRefunds(frameId, bets) {
         await atomicWrite(QUEUE_FILE, newQueue);
         currentQueueLength = newQueue.length;
     } finally { release(); }
+    
     processPayoutQueue();
 }
 
@@ -514,7 +524,6 @@ async function closeFrame(closePrice, closeTime) {
         const realSharesDown = Math.max(0, gameState.poolShares.down - 50);
         const frameSol = gameState.bets.reduce((acc, bet) => acc + bet.costSol, 0);
 
-        // BUGFIX: Declare feeAmt and upkeepAmt at top level with defaults
         let feeAmt = 0;
         let upkeepAmt = 0;
 
@@ -559,7 +568,6 @@ async function closeFrame(closePrice, closeTime) {
             time: new Date(frameId).toISOString(), open: openPrice, close: closePrice,
             result: result, sharesUp: realSharesUp, sharesDown: realSharesDown,
             totalSol: frameSol, winners: winnerCount, payout: payoutTotal,
-            // These are now guaranteed to be defined
             fee: feeAmt, upkeep: upkeepAmt, users: uniqueUsers, vStart: gameState.vaultStartBalance, vEnd: vaultEndBalance
         };
         
@@ -613,4 +621,364 @@ async function closeFrame(closePrice, closeTime) {
     }
 }
 
-// ... (updatePrice and endpoints UNCHANGED, omitting for brevity) ...
+async function updatePrice() {
+    let fetchedPrice = 0;
+    let priceFound = false;
+
+    try {
+        const response = await axios.get(`${PYTH_HERMES_URL}?ids[]=${SOL_FEED_ID}`, { timeout: 2000 });
+        if (response.data && response.data.parsed && response.data.parsed[0]) {
+            const p = response.data.parsed[0].price;
+            fetchedPrice = Number(p.price) * Math.pow(10, p.expo);
+            priceFound = true;
+        }
+    } catch (e) { console.log(`[ORACLE] Pyth Failed: ${e.message}`); }
+
+    if (!priceFound && COINGECKO_API_KEY) {
+        try {
+            const response = await axios.get('https://api.coingecko.com/api/v3/simple/price', {
+                params: { ids: 'solana', vs_currencies: 'usd', x_cg_demo_api_key: COINGECKO_API_KEY },
+                timeout: 4000
+            });
+            if (response.data.solana) {
+                fetchedPrice = response.data.solana.usd;
+                priceFound = true;
+            }
+        } catch (e) { console.log(`[ORACLE] CoinGecko Failed: ${e.message}`); }
+    }
+
+    if (priceFound) {
+        await stateMutex.runExclusive(async () => {
+            gameState.price = fetchedPrice;
+            gameState.lastPriceTimestamp = Date.now();
+            const currentWindowStart = getCurrentWindowStart();
+
+            if (Date.now() >= gameState.hourlySentiment.nextReset) {
+                log("> [SENTIMENT] Hourly reset triggered.");
+                gameState.hourlySentiment.up = 0;
+                gameState.hourlySentiment.down = 0;
+                gameState.hourlySentiment.nextReset = getNextHourTimestamp();
+                sentimentVotes.clear(); 
+                await saveSystemState();
+            }
+
+            const frameEndTime = gameState.candleStartTime + FRAME_DURATION;
+            if (gameState.isResetting && Date.now() > (frameEndTime + 60000)) {
+                 log("⚠️ [FAILSAFE] RESETTING stuck > 1m. Refunds issued. Starting new frame.", "FAILSAFE");
+                 await cancelCurrentFrameAndRefund();
+                 gameState.isResetting = false; 
+                 gameState.isPaused = false; 
+                 gameState.isCancelled = false; 
+                 gameState.candleStartTime = currentWindowStart;
+                 gameState.candleOpen = fetchedPrice;
+                 gameState.poolShares = { up: 50, down: 50 }; 
+                 gameState.bets = []; 
+                 gameState.sharePriceHistory = [];
+                 await saveSystemState();
+                 updatePublicStateCache();
+                 return;
+            }
+            if (gameState.isResetting) return;
+            if (gameState.isPaused) {
+                const timeRemaining = (gameState.candleStartTime + FRAME_DURATION) - Date.now();
+                if (!gameState.isCancelled && timeRemaining < 300000 && timeRemaining > 0) {
+                    log("⚠️ [AUTO] Auto-cancelling due to prolonged pause...", "AUTO");
+                    await cancelCurrentFrameAndRefund(); 
+                    return;
+                }
+                if (currentWindowStart > gameState.candleStartTime) {
+                    log("> [SYS] Unpausing for new Frame.");
+                    if (!gameState.isCancelled) {
+                         const skippedFrameRecord = {
+                            id: gameState.candleStartTime,
+                            startTime: gameState.candleStartTime,
+                            endTime: gameState.candleStartTime + FRAME_DURATION,
+                            time: new Date(gameState.candleStartTime).toISOString(),
+                            open: gameState.candleOpen,
+                            close: fetchedPrice,
+                            result: "PAUSED", 
+                            sharesUp: 0, sharesDown: 0, totalSol: 0, winners: 0, payout: 0
+                        };
+                        historySummary.unshift(skippedFrameRecord);
+                        if(historySummary.length > 100) historySummary = historySummary.slice(0,100);
+                        await atomicWrite(HISTORY_FILE, historySummary);
+                        gameState.isPaused = false; 
+                    } else {
+                        gameState.isCancelled = false;
+                        gameState.isPaused = false;
+                    }
+                    gameState.candleStartTime = currentWindowStart;
+                    gameState.candleOpen = fetchedPrice;
+                    await saveSystemState();
+                }
+                return;
+            }
+            if (currentWindowStart > gameState.candleStartTime) {
+                if (gameState.candleStartTime === 0) {
+                    gameState.candleStartTime = currentWindowStart;
+                    gameState.candleOpen = fetchedPrice;
+                    await saveSystemState();
+                } else {
+                    log(`> [SYS] Closing Frame: ${gameState.candleStartTime} @ $${fetchedPrice}`);
+                    gameState.isResetting = true; 
+                    await saveSystemState();
+                    await closeFrame(fetchedPrice, currentWindowStart);
+                }
+            }
+            const totalS = gameState.poolShares.up + gameState.poolShares.down;
+            const pUp = (gameState.poolShares.up / totalS) * PRICE_SCALE;
+            const pDown = (gameState.poolShares.down / totalS) * PRICE_SCALE;
+            if (!gameState.sharePriceHistory) gameState.sharePriceHistory = [];
+            gameState.sharePriceHistory.push({ t: Date.now(), up: pUp, down: pDown });
+            const FIVE_MINS = 5 * 60 * 1000;
+            gameState.sharePriceHistory = gameState.sharePriceHistory.filter(x => x.t > Date.now() - FIVE_MINS);
+            await saveSystemState();
+        });
+    }
+}
+
+setInterval(updatePrice, 10000); 
+updatePrice(); 
+
+// --- CACHE GENERATION ---
+function updatePublicStateCache() {
+    if (!isInitialized) return; 
+    const now = Date.now();
+    const priceChange = gameState.price - gameState.candleOpen;
+    const percentChange = gameState.candleOpen ? (priceChange / gameState.candleOpen) * 100 : 0;
+    const currentVolume = gameState.bets.reduce((acc, b) => acc + b.costSol, 0);
+    const totalShares = gameState.poolShares.up + gameState.poolShares.down;
+    const priceUp = (gameState.poolShares.up / totalShares) * PRICE_SCALE;
+    const priceDown = (gameState.poolShares.down / totalShares) * PRICE_SCALE;
+    const history = gameState.sharePriceHistory || [];
+    const baseline = { up: 0.05, down: 0.05 };
+    const oneMinAgo = history.find(x => x.t >= now - 60000) || baseline;
+    const fiveMinAgo = history.find(x => x.t >= now - 300000) || baseline;
+    function getPercentChange(current, old) { if (!old || old === 0) return 0; return ((current - old) / old) * 100; }
+    const changes = {
+        up1m: getPercentChange(priceUp, oneMinAgo.up),
+        up5m: getPercentChange(priceUp, fiveMinAgo.up),
+        down1m: getPercentChange(priceDown, oneMinAgo.down),
+        down5m: getPercentChange(priceDown, fiveMinAgo.down),
+    };
+    const uniqueUsers = new Set(gameState.bets.map(b => b.user)).size;
+    const lastFramePot = historySummary.length > 0 ? historySummary[0].totalSol : 0;
+    cachedPublicState = {
+        price: gameState.price,
+        openPrice: gameState.candleOpen,
+        candleStartTime: gameState.candleStartTime,
+        candleEndTime: gameState.candleStartTime + FRAME_DURATION,
+        change: percentChange,
+        currentVolume: currentVolume,
+        uniqueUsers: uniqueUsers,
+        platformStats: globalStats,
+        isPaused: gameState.isPaused,
+        isResetting: gameState.isResetting,
+        isCancelled: gameState.isCancelled,
+        broadcast: gameState.broadcast,
+        market: { priceUp, priceDown, sharesUp: gameState.poolShares.up, sharesDown: gameState.poolShares.down, changes },
+        history: historySummary,
+        recentTrades: gameState.recentTrades,
+        leaderboard: globalLeaderboard,
+        lastPriceTimestamp: gameState.lastPriceTimestamp,
+        backendVersion: BACKEND_VERSION,
+        payoutQueueLength: currentQueueLength,
+        lastFramePot: lastFramePot,
+        totalLifetimeUsers: globalStats.totalLifetimeUsers,
+        totalWinnings: globalStats.totalWinnings,
+        hourlySentiment: gameState.hourlySentiment
+    };
+}
+
+setInterval(updatePublicStateCache, 500);
+
+// --- ENDPOINTS ---
+app.get('/api/state', stateLimiter, async (req, res) => {
+    if (!isInitialized || !cachedPublicState) return res.status(503).json({ error: "SERVICE_UNAVAILABLE", reason: "Backend cache initializing." });
+    const response = { ...cachedPublicState };
+    const now = new Date();
+    const nextWindowStart = getCurrentWindowStart() + FRAME_DURATION;
+    response.msUntilClose = nextWindowStart - now.getTime();
+    const userKey = req.query.user;
+    if (userKey && isValidSolanaAddress(userKey)) {
+        const myStats = await getUser(userKey);
+        response.userStats = myStats;
+        const userBets = gameState.bets.filter(b => b.user === userKey);
+        response.activePosition = {
+            upShares: userBets.filter(b => b.direction === 'UP').reduce((a, b) => a + b.shares, 0),
+            downShares: userBets.filter(b => b.direction === 'DOWN').reduce((a, b) => a + b.shares, 0),
+            upSol: userBets.filter(b => b.direction === 'UP').reduce((a, b) => a + b.costSol, 0),
+            downSol: userBets.filter(b => b.direction === 'DOWN').reduce((a, b) => a + b.costSol, 0),
+            wageredSol: userBets.reduce((a, b) => a + b.costSol, 0)
+        };
+    }
+    res.json(response);
+});
+
+app.get('/api/image/fine', (req, res) => { res.json({ image: cachedItsFineImage }); });
+app.get('/api/image/over', (req, res) => { res.json({ image: cachedItsOverImage }); });
+app.get('/api/share-image', (req, res) => { res.json({ image: cachedShareImage }); });
+app.get('/api/image/sentiment-up', (req, res) => { res.json({ image: cachedSentUpImage }); });
+app.get('/api/image/sentiment-down', (req, res) => { res.json({ image: cachedSentDownImage }); });
+
+app.post('/api/sentiment/vote', voteLimiter, async (req, res) => {
+    const { direction, userPubKey } = req.body; 
+    if (!['UP', 'DOWN'].includes(direction)) return res.status(400).json({ error: "Invalid Direction" });
+    if (!userPubKey || !isValidSolanaAddress(userPubKey)) return res.status(400).json({ error: "Invalid Wallet" });
+
+    const release = await stateMutex.acquire();
+    try {
+        const now = Date.now();
+        const lastVoteTime = sentimentVotes.get(userPubKey) || 0;
+        const COOLDOWN_MS = 15 * 60 * 1000; 
+
+        if (now - lastVoteTime < COOLDOWN_MS) {
+            return res.status(429).json({ error: "VOTE_COOLDOWN", nextVote: lastVoteTime + COOLDOWN_MS });
+        }
+
+        if (direction === 'UP') gameState.hourlySentiment.up++;
+        else gameState.hourlySentiment.down++;
+        
+        sentimentVotes.set(userPubKey, now);
+        
+        await saveSystemState();
+        updatePublicStateCache(); 
+        log(`> [SENTIMENT] Vote: ${direction} from ${userPubKey.slice(0,6)}`, "SENT");
+        res.json({ success: true, sentiment: gameState.hourlySentiment });
+    } finally {
+        release();
+    }
+});
+
+app.get('/api/admin/logs', (req, res) => {
+    const auth = req.headers['x-admin-secret'];
+    if (!auth || auth !== process.env.ADMIN_ACTION_PASSWORD) return res.status(403).json({ error: "UNAUTHORIZED" });
+    res.json({ logs: serverLogs });
+});
+
+app.get('/api/admin/payouts', async (req, res) => {
+    const auth = req.headers['x-admin-secret'];
+    if (!auth || auth !== process.env.ADMIN_ACTION_PASSWORD) return res.status(403).json({ error: "UNAUTHORIZED" });
+    let currentQueue = [];
+    if (fsSync.existsSync(QUEUE_FILE)) { try { currentQueue = JSON.parse(fsSync.readFileSync(QUEUE_FILE, 'utf8')); } catch(e) {} }
+    res.json({ queue: currentQueue, history: payoutHistory });
+});
+
+app.get('/api/admin/full-history', async (req, res) => {
+    const auth = req.headers['x-admin-secret'];
+    if (!auth || auth !== process.env.ADMIN_ACTION_PASSWORD) return res.status(403).json({ error: "UNAUTHORIZED" });
+    res.json({ history: historySummary });
+});
+
+app.post('/api/verify-bet', betLimiter, async (req, res) => {
+    if (!isInitialized) return res.status(503).json({ error: "SERVICE_UNAVAILABLE" });
+    if (gameState.isPaused) return res.status(400).json({ error: "MARKET_PAUSED" });
+    if (gameState.isResetting) return res.status(503).json({ error: "CALCULATING_RESULTS" });
+    if (gameState.isCancelled) return res.status(400).json({ error: "MARKET_CANCELLED" });
+
+    const { signature, direction, userPubKey } = req.body;
+    if (!signature || !userPubKey || !isValidSolanaAddress(userPubKey) || !isValidSignature(signature)) return res.status(400).json({ error: "INVALID_DATA_FORMAT" });
+    if (processedSignatures.has(signature)) return res.status(400).json({ error: "DUPLICATE_TX_DETECTED" });
+
+    let solAmount = 0;
+    let txBlockTime = 0;
+    try {
+        const connection = new Connection(SOLANA_NETWORK, 'confirmed');
+        const tx = await connection.getParsedTransaction(signature, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 });
+        if (!tx || tx.meta.err) return res.status(400).json({ error: "TX_INVALID" });
+        txBlockTime = tx.blockTime * 1000;
+        let housePubKeyStr = houseKeypair ? houseKeypair.publicKey.toString() : "BXSp5y6Ua6tB5fZDe1EscVaaEaZLg1yqzrsPqAXhKJYy"; 
+        const instructions = tx.transaction.message.instructions;
+        for (let ix of instructions) {
+            if (ix.program === 'system' && ix.parsed.type === 'transfer') {
+                if (ix.parsed.info.destination === housePubKeyStr) {
+                    solAmount = ix.parsed.info.lamports / 1000000000;
+                    break;
+                }
+            }
+        }
+        if (solAmount <= 0) return res.status(400).json({ error: "NO_FUNDS" });
+    } catch (e) { return res.status(500).json({ error: "CHAIN_ERROR" }); }
+
+    const release = await stateMutex.acquire();
+    try {
+        if (processedSignatures.has(signature)) return res.status(400).json({ error: "DUPLICATE_TX_DETECTED" });
+        if (txBlockTime < gameState.candleStartTime) return res.status(400).json({ error: "TX_TIMESTAMP_EXPIRED" });
+        if (gameState.isPaused) return res.status(400).json({ error: "MARKET_PAUSED" });
+        if (gameState.isResetting) return res.status(503).json({ error: "CALCULATING_RESULTS" });
+
+        const totalShares = gameState.poolShares.up + gameState.poolShares.down;
+        let price = 0.05; 
+        if (direction === 'UP') price = (gameState.poolShares.up / totalShares) * PRICE_SCALE;
+        else price = (gameState.poolShares.down / totalShares) * PRICE_SCALE;
+        if(price < 0.001) price = 0.001;
+
+        const sharesReceived = solAmount / price;
+        if (!Number.isFinite(sharesReceived) || sharesReceived <= 0) return res.status(500).json({ error: "CALCULATION_ERROR" });
+
+        if (direction === 'UP') gameState.poolShares.up += sharesReceived;
+        else gameState.poolShares.down += sharesReceived;
+
+        if (!knownUsers.has(userPubKey)) { knownUsers.add(userPubKey); globalStats.totalLifetimeUsers++; }
+
+        getUser(userPubKey).then(userData => { userData.totalSol += solAmount; saveUser(userPubKey, userData); });
+
+        gameState.bets.push({ signature, user: userPubKey, direction, costSol: solAmount, entryPrice: price, shares: sharesReceived, timestamp: Date.now() });
+        gameState.recentTrades.unshift({ user: userPubKey, direction, shares: sharesReceived, time: Date.now() });
+        if (gameState.recentTrades.length > 20) gameState.recentTrades.pop();
+
+        globalStats.totalVolume += solAmount;
+        processedSignatures.add(signature);
+        await fs.appendFile(path.join(DATA_DIR, 'signatures.log'), signature + '\n');
+        updatePublicStateCache();
+        await saveSystemState();
+        log(`> [TRADE] ${userPubKey.slice(0,6)} bought ${sharesReceived.toFixed(2)} ${direction} for ${solAmount} SOL`, "TRADE");
+        res.json({ success: true, shares: sharesReceived, price: price });
+    } catch (e) { 
+        log(`> [ERR] Trade Error: ${e}`, "ERR");
+        res.status(500).json({ error: "STATE_ERROR" }); 
+    } finally { release(); }
+});
+
+app.post('/api/admin/toggle-pause', async (req, res) => {
+    const auth = req.headers['x-admin-secret'];
+    if (!auth || auth !== process.env.ADMIN_ACTION_PASSWORD) return res.status(403).json({ error: "UNAUTHORIZED" });
+    const release = await stateMutex.acquire();
+    try {
+        gameState.isPaused = !gameState.isPaused;
+        if (!gameState.isPaused) gameState.isCancelled = false; 
+        await saveSystemState();
+        log(`> [ADMIN] Market Paused State toggled to: ${gameState.isPaused}`, "ADMIN");
+        res.json({ success: true, isPaused: gameState.isPaused });
+    } catch (e) { log(`> [ERR] Admin Pause Error: ${e}`, "ERR"); res.status(500).json({ error: "ADMIN_ERROR" }); } 
+    finally { release(); }
+});
+
+app.post('/api/admin/cancel-frame', async (req, res) => {
+    const auth = req.headers['x-admin-secret'];
+    if (!auth || auth !== process.env.ADMIN_ACTION_PASSWORD) return res.status(403).json({ error: "UNAUTHORIZED" });
+    const release = await stateMutex.acquire();
+    try {
+        await cancelCurrentFrameAndRefund();
+        log(`> [ADMIN] Frame Cancelled by Admin`, "ADMIN");
+        res.json({ success: true, message: "Frame Cancelled. Market Paused." });
+    } catch (e) { log(`> [ERR] Admin Cancel Error: ${e}`, "ERR"); res.status(500).json({ error: "ADMIN_ERROR" }); } 
+    finally { release(); }
+});
+
+app.post('/api/admin/broadcast', async (req, res) => {
+    const auth = req.headers['x-admin-secret'];
+    if (!auth || auth !== process.env.ADMIN_ACTION_PASSWORD) return res.status(403).json({ error: "UNAUTHORIZED" });
+    const { message, isActive } = req.body;
+    const release = await stateMutex.acquire();
+    try {
+        gameState.broadcast = { message: message || "", isActive: !!isActive };
+        await saveSystemState();
+        updatePublicStateCache(); 
+        log(`> [ADMIN] Broadcast updated: "${message}" (Active: ${isActive})`, "ADMIN");
+        res.json({ success: true, broadcast: gameState.broadcast });
+    } catch (e) { log(`> [ERR] Admin Broadcast Error: ${e}`, "ERR"); res.status(500).json({ error: "ADMIN_ERROR" }); } 
+    finally { release(); }
+});
+
+app.listen(PORT, () => { log(`> ASDForecast Engine v${BACKEND_VERSION} running on ${PORT}`, "SYS"); loadAndInit(); });
