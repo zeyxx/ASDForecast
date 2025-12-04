@@ -32,7 +32,7 @@ const PAYOUT_MULTIPLIER = 0.94;
 const FEE_PERCENT = 0.0552; 
 const UPKEEP_PERCENT = 0.0048; 
 const FRAME_DURATION = 15 * 60 * 1000; 
-const BACKEND_VERSION = "141.3"; // HOTFIX: userPositions ReferenceError
+const BACKEND_VERSION = "142.0"; // UPDATE: Daily Sentiment Persistence & ASDF Fix
 const PRIORITY_FEE_UNITS = 50000; 
 
 // --- LOGGING ---
@@ -56,9 +56,9 @@ function isValidSignature(signature) { return typeof signature === 'string' && S
 const betLimiter = rateLimit({ windowMs: 1 * 60 * 1000, max: 10, message: { error: "RATE_LIMIT_EXCEEDED" }, standardHeaders: true, legacyHeaders: false });
 const stateLimiter = rateLimit({ windowMs: 1 * 60 * 1000, max: 120, message: { error: "POLLING_LIMIT_EXCEEDED" }, standardHeaders: true, legacyHeaders: false });
 const voteLimiter = rateLimit({ 
-    windowMs: 15 * 60 * 1000, // 15 minute cooldown
+    windowMs: 3600 * 1000, // 1 hour per IP limit (Backup/Safety)
     max: 1, 
-    message: { error: "COOLDOWN_ACTIVE" }, 
+    message: { error: "IP_COOLDOWN_ACTIVE" }, 
     standardHeaders: true, 
     legacyHeaders: false 
 });
@@ -81,6 +81,7 @@ const QUEUE_FILE = path.join(DATA_DIR, 'payout_queue.json');
 const PAYOUT_HISTORY_FILE = path.join(DATA_DIR, 'payout_history.json');
 const PAYOUT_MASTER_LOG = path.join(DATA_DIR, 'payout_master.log');
 const FAILED_REFUNDS_FILE = path.join(DATA_DIR, 'failed_refunds.json');
+const SENTIMENT_VOTES_FILE = path.join(DATA_DIR, 'sentiment_votes.json'); // NEW: Persistent vote map file
 
 log(`> [SYS] Persistence Root: ${DATA_DIR}`);
 
@@ -144,13 +145,13 @@ let cachedPublicState = null;
 let sentimentVotes = new Map(); 
 let isProcessingQueue = false; 
 
-function getNextHourTimestamp() {
+function getNextDayTimestamp() { // MODIFIED: Next Day Reset
     const now = new Date();
-    now.setHours(now.getHours() + 1, 0, 0, 0);
+    now.setDate(now.getDate() + 1);
+    now.setHours(0, 0, 0, 0); // Reset at midnight EST
     return now.getTime();
 }
 
-// --- UTILITY FUNCTION ---
 function getCurrentWindowStart() {
     const now = new Date();
     const minutes = Math.floor(now.getMinutes() / 15) * 15;
@@ -187,6 +188,12 @@ function loadGlobalState() {
         }
         if (fsSync.existsSync(PAYOUT_HISTORY_FILE)) payoutHistory = JSON.parse(fsSync.readFileSync(PAYOUT_HISTORY_FILE));
         
+        // NEW: Load Sentiment Votes Map
+        if (fsSync.existsSync(SENTIMENT_VOTES_FILE)) {
+            const voteArray = JSON.parse(fsSync.readFileSync(SENTIMENT_VOTES_FILE));
+            sentimentVotes = new Map(voteArray);
+        }
+
         if (fsSync.existsSync(STATE_FILE)) {
             const savedState = JSON.parse(fsSync.readFileSync(STATE_FILE));
             gameState = { ...gameState, ...savedState };
@@ -194,8 +201,9 @@ function loadGlobalState() {
             if (!gameState.broadcast) gameState.broadcast = { message: "", isActive: false };
             if (!gameState.vaultStartBalance) gameState.vaultStartBalance = 0; 
             
+            // Re-init sentiment if missing or incorrectly hourly (now daily)
             if (!gameState.hourlySentiment || !gameState.hourlySentiment.nextReset) {
-                gameState.hourlySentiment = { up: 0, down: 0, nextReset: getNextHourTimestamp() };
+                gameState.hourlySentiment = { up: 0, down: 0, nextReset: getNextDayTimestamp() };
             }
             
             if (gameState.candleStartTime > 0) {
@@ -206,7 +214,7 @@ function loadGlobalState() {
                 }
             }
         } else {
-            gameState.hourlySentiment = { up: 0, down: 0, nextReset: getNextHourTimestamp() };
+            gameState.hourlySentiment = { up: 0, down: 0, nextReset: getNextDayTimestamp() };
         }
         
         const userFiles = fsSync.readdirSync(USERS_DIR);
@@ -220,6 +228,9 @@ function loadGlobalState() {
         let recalculatedWinnings = 0;
         if (historySummary.length > 0) recalculatedWinnings = historySummary.reduce((sum, frame) => sum + (frame.payout || 0), 0);
         globalStats.totalWinnings = recalculatedWinnings;
+        
+        log(`> [SYS] State Loaded.`);
+
     } catch (e) { log(`> [ERR] Load Error: ${e}`, "ERR"); }
 }
 
@@ -230,6 +241,9 @@ async function saveSystemState() {
         lastPriceTimestamp: gameState.lastPriceTimestamp, broadcast: gameState.broadcast, vaultStartBalance: gameState.vaultStartBalance, hourlySentiment: gameState.hourlySentiment
     });
     await atomicWrite(STATS_FILE, globalStats);
+    
+    // NEW: Save Sentiment Votes Map
+    await atomicWrite(SENTIMENT_VOTES_FILE, Array.from(sentimentVotes.entries()));
 }
 
 async function getUser(pubKey) {
@@ -313,9 +327,7 @@ async function processPayoutQueue() {
         while (queueData.length > 0) {
             const batch = queueData[0];
             if (typeof batch.retries === 'undefined') batch.retries = 0;
-
             const { type, recipients, frameId } = batch;
-            
             try {
                 const tx = new Transaction();
                 const priorityFeeIx = ComputeBudgetProgram.setComputeUnitPrice({ microLamports: PRIORITY_FEE_UNITS });
@@ -525,7 +537,6 @@ async function closeFrame(closePrice, closeTime) {
         const realSharesDown = Math.max(0, gameState.poolShares.down - 50);
         const frameSol = gameState.bets.reduce((acc, bet) => acc + bet.costSol, 0);
 
-        // FIX: Declare feeAmt and upkeepAmt at top level with defaults
         let feeAmt = 0;
         let upkeepAmt = 0;
 
@@ -540,12 +551,11 @@ async function closeFrame(closePrice, closeTime) {
 
         let winnerCount = 0;
         let payoutTotal = 0;
-        // FIX: userPositions must be declared here to avoid ReferenceError below
+        // FIX: userPositions hoisted to avoid ReferenceError below
         const userPositions = {}; 
         
         if (result !== "FLAT") {
             const potSol = frameSol * 0.94;
-            // NOTE: userPositions defined outside the IF statement now (hoisted)
             gameState.bets.forEach(bet => {
                 if (!userPositions[bet.user]) userPositions[bet.user] = { up: 0, down: 0 };
                 if (bet.direction === 'UP') userPositions[bet.user].up += bet.shares;
@@ -565,7 +575,7 @@ async function closeFrame(closePrice, closeTime) {
                 globalStats.totalWinnings += payoutTotal; 
             }
         }
-        
+
         const uniqueUsers = new Set(gameState.bets.map(b => b.user)).size;
         
         const frameRecord = {
@@ -581,7 +591,6 @@ async function closeFrame(closePrice, closeTime) {
         await atomicWrite(HISTORY_FILE, historySummary);
 
         const betsSnapshot = [...gameState.bets];
-        // NOTE: userPositions used here now safely declared
         const usersToUpdate = Object.entries(userPositions);
         const USER_IO_BATCH_SIZE = 20; 
         for (let i = 0; i < usersToUpdate.length; i += USER_IO_BATCH_SIZE) {
@@ -630,6 +639,7 @@ async function closeFrame(closePrice, closeTime) {
 async function updatePrice() {
     let fetchedPrice = 0;
     let priceFound = false;
+
     try {
         const response = await axios.get(`${PYTH_HERMES_URL}?ids[]=${SOL_FEED_ID}`, { timeout: 2000 });
         if (response.data && response.data.parsed && response.data.parsed[0]) {
@@ -659,10 +669,10 @@ async function updatePrice() {
             const currentWindowStart = getCurrentWindowStart();
 
             if (Date.now() >= gameState.hourlySentiment.nextReset) {
-                log("> [SENTIMENT] Hourly reset triggered.");
+                log("> [SENTIMENT] Daily reset triggered. Clearing votes.", "SENTIMENT");
                 gameState.hourlySentiment.up = 0;
                 gameState.hourlySentiment.down = 0;
-                gameState.hourlySentiment.nextReset = getNextHourTimestamp();
+                gameState.hourlySentiment.nextReset = getNextDayTimestamp();
                 sentimentVotes.clear(); 
                 await saveSystemState();
             }
@@ -836,7 +846,7 @@ app.post('/api/sentiment/vote', voteLimiter, async (req, res) => {
     try {
         const now = Date.now();
         const lastVoteTime = sentimentVotes.get(userPubKey) || 0;
-        const COOLDOWN_MS = 15 * 60 * 1000; 
+        const COOLDOWN_MS = 60 * 60 * 1000; // 1 Hour
 
         if (now - lastVoteTime < COOLDOWN_MS) {
             return res.status(429).json({ error: "VOTE_COOLDOWN", nextVote: lastVoteTime + COOLDOWN_MS });

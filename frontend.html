@@ -1,4 +1,4 @@
-<!-- ASDForecast v121.0 // FIX: SENTIMENT METER, PROGRESS BAR & IMAGE LOAD -->
+<!-- ASDForecast v122.1 // FIX: SENTIMENT METER, PROGRESS BAR & IMAGE LOAD -->
 
 <!-- Dependencies -->
 <script src="https://cdn.tailwindcss.com"></script>
@@ -321,10 +321,10 @@
                 <div><strong class="text-white block mb-1 text-base border-l-4 border-orange-500 pl-2">3. PRICING FORMULA</strong><p class="mb-2">The system maintains a constant invariant: <code>Price(UP) + Price(DOWN) = 0.1 SOL</code>.</p><div class="bg-black/50 p-3 rounded border border-orange-900/50 font-mono text-xs text-green-400">Share Price = (Liquidity_In_Direction / Total_Liquidity) * 0.1</div><p class="mt-2 text-xs text-gray-500">Note: A small virtual liquidity buffer (50 shares) is applied to both sides at the start of a frame to prevent infinite price swings on the very first bet.</p></div>
                 <div><strong class="text-white block mb-1 text-base border-l-4 border-orange-500 pl-2">4. PAYOUTS & FEES</strong><ul class="list-disc list-inside ml-2 space-y-2 text-orange-100/80 text-xs"><li><strong>THE ASH PILE (FEES):</strong> 5.52% of the Total Volume (all wagers combined) is deducted automatically. This revenue is sent to the Fee Wallet to buy back and burn <strong>$ASDFASDFA</strong>.</li><li><strong>House Reserve:</strong> 0.48% is retained to cover Solana network rent and transaction gas fees.</li><li><strong>The Winner's Pot:</strong> The remaining 94% of the Total Volume is the pot.</li><li><strong>Distribution:</strong> the pot is then distributed to winners divided among them based on how many shares they own, proportional to the total amount of winning shares.</li><li class="text-red-400"><strong>TOTAL MELTDOWN (FLAT MARKET):</strong> If the Open Price and Close Price are identical (0.00% Change), nobody wins. The house burns down. 99% of the pot is sent to the incinerator (Fee Wallet).</li><li class="text-red-400"><strong>THE HEDGE PARADOX:</strong> If you hold an exact equal amount of UP and DOWN shares (a flat position), you have signaled no conviction. The system treats this as a LOSS, regardless of the outcome. You will receive 0 payout.</li></ul></div>
                 <div><strong class="text-white block mb-1 text-base border-l-4 border-orange-500 pl-2">5. SCENARIOS</strong><div class="space-y-3 text-xs mt-2"><div class="bg-black/30 p-3 rounded border-l-2 border-green-500"><span class="text-green-400 font-bold block mb-1">Scenario A: The Crowd Follower (Consensus)</span><p class="opacity-80"><strong>The Situation:</strong> The market is bullish. 90 SOL is on UP, 10 SOL is on DOWN.<br><strong>Your Bet:</strong> You bet 1 SOL on UP.<br><strong>The Outcome:</strong> UP Wins.<br><strong>The Math:</strong> The Pot is ~94 SOL. You own roughly 1.1% of the winning pool.<br><strong>Result:</strong> You receive ~1.04 SOL back. A small, safe 4% profit.</p></div><div class="bg-black/30 p-3 rounded border-l-2 border-yellow-500"><span class="text-yellow-400 font-bold block mb-1">Scenario B: The Contrarian (Longshot)</span><p class="opacity-80"><strong>The Situation:</strong> The market is bullish (90 SOL UP vs 10 SOL DOWN).<br><strong>Your Bet:</strong> You bet 1 SOL on DOWN (The Underdog).<br><strong>The Outcome:</strong> DOWN Wins.<br><strong>The Math:</strong> The Pot is ~94 SOL. You own roughly 10% of the winning pool (since the pool is small).<br><strong>Result:</strong> You receive ~9.40 SOL back. A massive 840% profit for betting against the crowd.</p></div></div></div>
-                <div class="mt-6 border-t-2 border-red-900/50 pt-4 bg-red-900/10 p-4 rounded"><strong class="text-red-500 block mb-1 text-lg">⚠️ DISCLAIMER & RISK WARNING</strong><p class="text-xs text-orange-200 leading-relaxed">This platform is currently LIVE on Solana Mainnet. The operators are not responsible for lost funds, smart contract errors, oracle latency, or network failures. <br><br><strong>PREDICT RESPONSIBLY:</strong> Never wager funds you cannot afford to lose. This is an experimental technology demonstration.</p></div>
+                <div class="mt-6 border-t-2 border-red-900/50 pt-4 bg-red-900/10 p-4 rounded"><strong class="text-red-500 block mb-1 text-lg">⚠️ DISCLAIMER & RISK WARNING</strong><p class="xs text-orange-200 leading-relaxed">This platform is currently LIVE on Solana Mainnet. The operators are not responsible for lost funds, smart contract errors, oracle latency, or network failures. <br><br><strong>PREDICT RESPONSIBLY:</strong> Never wager funds you cannot afford to lose. This is an experimental technology demonstration.</p></div>
             </div>
         </div>
-        <div class="text-center text-xs text-gray-500 font-mono pt-2 border-t border-orange-900/50"><span class="text-orange-400">Frontend v121.0</span> | Backend <span id="backend-version">v---</span></div>
+        <div class="text-center text-xs text-gray-500 font-mono pt-2 border-t border-orange-900/50"><span class="text-orange-400">Frontend v122.0</span> | Backend <span id="backend-version">v---</span></div>
     </div>
 
     <!-- SHARE MODAL -->
@@ -465,12 +465,11 @@
         ui.disconnect.onclick = disconnectWallet;
         ui.qty.oninput = () => { ui.qty.value = Math.floor(Math.max(1, ui.qty.value)); updateCosts(); };
 
-        // Fetch Images immediately
+        // Fetch Images immediately (FIXED TO ASSIGN TO STATE)
         fetch(`${API_URL}/api/image/fine`).then(r=>r.json()).then(d=>{ if(d.image) state.images.fine = d.image; });
         fetch(`${API_URL}/api/image/over`).then(r=>r.json()).then(d=>{ if(d.image) state.images.over = d.image; });
-        // NEW SENTIMENT IMAGES (Fixed to assign to state)
-        fetch(`${API_URL}/api/image/sentiment-up`).then(r=>r.json()).then(d=>{ if(d.image && ui.imgSentUp) { ui.imgSentUp.src = d.image; state.images.sentUp = d.image; } });
-        fetch(`${API_URL}/api/image/sentiment-down`).then(r=>r.json()).then(d=>{ if(d.image && ui.imgSentDown) { ui.imgSentDown.src = d.image; state.images.sentDown = d.image; } });
+        fetch(`${API_URL}/api/image/sentiment-up`).then(r=>r.json()).then(d=>{ if(d.image) { state.images.sentUp = d.image; } });
+        fetch(`${API_URL}/api/image/sentiment-down`).then(r=>r.json()).then(d=>{ if(d.image) { state.images.sentDown = d.image; } });
 
         // PAGE VISIBILITY OPTIMIZATION
         document.addEventListener("visibilitychange", () => {
@@ -504,14 +503,16 @@
                 body: JSON.stringify({ direction: dir, userPubKey: state.pubKey.toString() })
             });
             const data = await res.json();
-            if (data.error === "COOLDOWN_ACTIVE" || data.error === "VOTE_COOLDOWN") {
-                alert("Cooldown active: You can only vote once every 15 minutes.");
+            if (data.error === "VOTE_COOLDOWN") {
+                alert("Cooldown active: You can only vote once per hour.");
+            } else if (data.error === "IP_COOLDOWN_ACTIVE") {
+                alert("Cooldown active: Too many votes from this location. Please try again later.");
             } else if (!data.success) {
                 alert("Vote failed: " + (data.error || "Unknown error"));
             }
         } catch(e) { console.error(e); }
         
-        // Keep disabled for 15s visually (backend enforces 15m)
+        // Keep disabled for 15s visually (backend enforces 1h)
         setTimeout(() => { btn.disabled = false; }, 15000);
     };
 
@@ -649,8 +650,15 @@
         }).join('');
     }
 
-    function renderTicker(trades) { if(!trades || !ui.ticker) return; ui.ticker.innerHTML = trades.slice(0,10).map(t => `<div class="ticker-item">[ ${t.user.slice(0,4)}.. bought <span class="${t.direction==='UP'?'text-green-400':'text-red-400'}">${t.shares.toFixed(1)} ${t.direction}</span> ]</div>`).join(''); }
-    function renderLeaderboard(data) { if (!data || data.length === 0) { ui.leaderboardRows.innerHTML = '<tr><td colspan="4" class="py-2 italic opacity-50 text-center">No Data Yet</td></tr>'; return; } ui.leaderboardRows.innerHTML = data.map((user, index) => `<tr class="border-b border-orange-900/20"><td class="py-2 text-white font-bold"><span class="text-orange-500 mr-2">#${index+1}</span> ${user.pubKey.slice(0,5)}...</td><td class="py-2 text-right text-gray-300">${user.bets}</td><td class="py-2 text-right text-yellow-400">${user.winRate.toFixed(0)}%</td><td class="py-2 text-right text-green-400 font-bold">${user.totalWon.toFixed(2)} SOL</td></tr>`).join(''); }
+    function renderTicker(trades) {
+        if(!trades || !ui.ticker) return;
+        ui.ticker.innerHTML = trades.slice(0,10).map(t => `<div class="ticker-item">[ ${t.user.slice(0,4)}.. bought <span class="${t.direction==='UP'?'text-green-400':'text-red-400'}">${t.shares.toFixed(1)} ${t.direction}</span> ]</div>`).join('');
+    }
+
+    function renderLeaderboard(data) {
+        if (!data || data.length === 0) { ui.leaderboardRows.innerHTML = '<tr><td colspan="4" class="py-2 italic opacity-50 text-center">No Data Yet</td></tr>'; return; }
+        ui.leaderboardRows.innerHTML = data.map((user, index) => `<tr class="border-b border-orange-900/20"><td class="py-2 text-white font-bold"><span class="text-orange-500 mr-2">#${index+1}</span> ${user.pubKey.slice(0,5)}...</td><td class="py-2 text-right text-gray-300">${user.bets}</td><td class="py-2 text-right text-yellow-400">${user.winRate.toFixed(0)}%</td><td class="py-2 text-right text-green-400 font-bold">${user.totalWon.toFixed(2)} SOL</td></tr>`).join('');
+    }
 
     async function poll() {
         if (document.hidden) return;
@@ -680,7 +688,12 @@
 
             state.fullHistory = data.history || [];
             
-            if(data.platformStats) { ui.statGlobalVol.innerText = `${data.platformStats.totalVolume.toFixed(2)} SOL`; ui.statGlobalFees.innerText = `${data.platformStats.totalFees.toFixed(3)} SOL`; if(ui.statGlobalASDF) ui.statGlobalASDF.innerText = Math.round(data.platformStats.totalASDF).toLocaleString() + " ASDF"; }
+            if(data.platformStats) { 
+                ui.statGlobalVol.innerText = `${data.platformStats.totalVolume.toFixed(2)} SOL`; 
+                ui.statGlobalFees.innerText = `${data.platformStats.totalFees.toFixed(3)} SOL`; 
+                // FIX: Use toLocaleString for large ASDF numbers
+                if(ui.statGlobalASDF) ui.statGlobalASDF.innerText = Math.round(data.platformStats.totalASDF).toLocaleString() + " ASDF"; 
+            }
             if(data.uniqueUsers !== undefined) ui.frameUsers.innerText = data.uniqueUsers; if(data.totalLifetimeUsers) ui.globalLifetimeUsers.innerText = data.totalLifetimeUsers.toLocaleString(); if(data.totalWinnings !== undefined) ui.globalWinnings.innerText = `${data.totalWinnings.toFixed(2)} SOL`;
             if (data.lastFramePot !== undefined) { const statusIcon = data.payoutQueueLength === 0 ? "✅" : "⏳"; ui.globalLastPayout.innerText = `${statusIcon} ${data.lastFramePot.toFixed(2)} SOL`; }
             if (data.broadcast && data.broadcast.isActive && data.broadcast.message) { ui.broadcastContainer.classList.remove('hidden'); ui.broadcastText.innerText = data.broadcast.message; } else { ui.broadcastContainer.classList.add('hidden'); }
@@ -692,13 +705,15 @@
                 const sTotal = sUp + sDown || 1;
                 ui.valSentUp.innerText = sUp;
                 ui.valSentDown.innerText = sDown;
-                ui.sentBarFill.style.width = `${(sUp / sTotal) * 100}%`;
                 
-                // Set background color of bar based on dominance
-                if (sUp > sDown) { ui.sentBarFill.style.backgroundColor = 'var(--bg-up-color, #22c55e)'; }
-                else if (sDown > sUp) { ui.sentBarFill.style.backgroundColor = 'var(--bg-down-color, #ef4444)'; }
-                else { ui.sentBarFill.style.backgroundColor = '#fb923c'; } // Neutral color
+                // FIX: Progress Bar Calculation
+                const upPercent = sTotal > 0 ? (sUp / sTotal) * 100 : 50;
+                ui.sentBarFill.style.width = `${upPercent}%`;
                 
+                if (sUp > sDown) { ui.sentBarFill.style.backgroundColor = '#22c55e'; }
+                else if (sDown > sUp) { ui.sentBarFill.style.backgroundColor = '#ef4444'; }
+                else { ui.sentBarFill.style.backgroundColor = '#fb923c'; }
+
                 const now = Date.now();
                 if (data.hourlySentiment.nextReset > now) {
                      const totalSeconds = Math.floor((data.hourlySentiment.nextReset - now) / 1000);
@@ -709,6 +724,11 @@
                      ui.sentTimer.innerText = `Resetting...`;
                 }
             }
+            
+            // FIX: Image Population
+            if (state.images.sentUp) ui.imgSentUp.src = state.images.sentUp;
+            if (state.images.sentDown) ui.imgSentDown.src = state.images.sentDown;
+
 
             if(data.userStats) {
                 state.userLog = data.userStats.frameLog || {}; ui.statsContainer.classList.remove('hidden'); const total = data.userStats.wins + data.userStats.losses; const rate = total > 0 ? ((data.userStats.wins/total)*100).toFixed(0) : 0; ui.statWin.innerText = `${rate}% (${data.userStats.wins}/${total})`; ui.statVol.innerText = `${data.userStats.totalSol.toFixed(3)} SOL`;
