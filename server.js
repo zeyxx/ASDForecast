@@ -37,7 +37,7 @@ const PAYOUT_MULTIPLIER = 0.94;
 const FEE_PERCENT = 0.0552; 
 const UPKEEP_PERCENT = 0.0048; // 0.48%
 const FRAME_DURATION = 15 * 60 * 1000; 
-const BACKEND_VERSION = "122.0"; // UPDATE: Broadcast & Enhanced Logging
+const BACKEND_VERSION = "123.0"; // UPDATE: Deadlock Fix
 
 const PRIORITY_FEE_UNITS = 50000; 
 
@@ -151,7 +151,7 @@ let gameState = {
     isPaused: false,
     isResetting: false,
     isCancelled: false,
-    broadcast: { message: "", isActive: false } // NEW: Broadcast State
+    broadcast: { message: "", isActive: false }
 };
 let historySummary = [];
 let globalStats = { totalVolume: 0, totalFees: 0, totalASDF: 0, totalWinnings: 0, totalLifetimeUsers: 0, lastASDFSignature: null };
@@ -181,7 +181,6 @@ function loadGlobalState() {
             const savedState = JSON.parse(fsSync.readFileSync(STATE_FILE));
             gameState = { ...gameState, ...savedState };
             gameState.isResetting = false; 
-            // Ensure broadcast structure exists if loading old state
             if (!gameState.broadcast) gameState.broadcast = { message: "", isActive: false };
             
             if (gameState.candleStartTime > 0) {
@@ -313,7 +312,7 @@ async function updateLeaderboard() {
         }
         leaders.sort((a, b) => b.totalWon - a.totalWon);
         globalLeaderboard = leaders.slice(0, 5); 
-        console.log(`> [LEADERBOARD] Updated. Top Degen: ${globalLeaderboard[0]?.pubKey || 'None'}`);
+        console.log(`> [LEADERBOARD] Updated.`);
     } catch (e) { console.error("Leaderboard Error:", e.message); }
 }
 setInterval(updateLeaderboard, 60000); 
@@ -408,6 +407,9 @@ async function processPayoutQueue() {
     } catch (e) { console.error("> [QUEUE] Error:", e); }
     finally { release(); }
 }
+
+// WATCHDOG: Ensure queue processes even if triggers fail
+setInterval(processPayoutQueue, 20000);
 
 async function queuePayouts(frameId, result, bets, totalVolume) {
     console.log(`> [PAYOUT] Queuing payouts for Frame ${frameId}. Result: ${result}, Vol: ${totalVolume}`);
@@ -523,9 +525,9 @@ async function cancelCurrentFrameAndRefund() {
     await saveSystemState();
 }
 
-
+// DEADLOCK FIX: Removed Mutex acquisition inside this function
 async function closeFrame(closePrice, closeTime) {
-    const release = await stateMutex.acquire(); 
+    // Note: stateMutex is already held by the caller (updatePrice)
     try {
         const frameId = gameState.candleStartTime; 
         console.log(`> [SYS] Closing Frame: ${frameId}`);
@@ -620,10 +622,22 @@ async function closeFrame(closePrice, closeTime) {
         await fs.writeFile(SIGS_FILE, '');
 
         updatePublicStateCache();
-
+        
+        // Advance State
+        gameState.candleStartTime = closeTime;
+        gameState.candleOpen = closePrice;
+        gameState.poolShares = { up: 50, down: 50 }; 
+        gameState.bets = []; 
+        gameState.sharePriceHistory = [];
+        gameState.isResetting = false; 
+        
         await saveSystemState();
         
-    } finally { release(); }
+    } catch(e) {
+        console.error(`> [ERR] CloseFrame Failed: ${e.message}`);
+        // Panic Failsafe: If logic fails, try to unstick by unsetting reset flag
+        gameState.isResetting = false; 
+    }
 }
 
 async function updatePrice() {
@@ -660,25 +674,17 @@ async function updatePrice() {
 
             // RECOVERY MECHANISM FOR STUCK RESETTING STATE
             const frameEndTime = gameState.candleStartTime + FRAME_DURATION;
-            // If stuck in Resetting > 1 minute after close, trigger full REFUND and move on.
             if (gameState.isResetting && Date.now() > (frameEndTime + 60000)) {
                  console.log("⚠️ [FAILSAFE] RESETTING stuck > 1m. Refunds issued. Starting new frame.");
-                 
-                 // 1. Refund everyone in the stuck frame
                  await cancelCurrentFrameAndRefund();
-                 
-                 // 2. Advance State (Unpause & Reset flags)
                  gameState.isResetting = false; 
                  gameState.isPaused = false; 
                  gameState.isCancelled = false; 
-                 
-                 // 3. Set New Frame Times
                  gameState.candleStartTime = currentWindowStart;
                  gameState.candleOpen = fetchedPrice;
                  gameState.poolShares = { up: 50, down: 50 }; 
                  gameState.bets = []; 
                  gameState.sharePriceHistory = [];
-                 
                  await saveSystemState();
                  updatePublicStateCache();
                  return;
@@ -730,7 +736,8 @@ async function updatePrice() {
                     console.log(`> [SYS] Closing Frame: ${gameState.candleStartTime} @ $${fetchedPrice}`);
                     gameState.isResetting = true; 
                     await saveSystemState();
-                    closeFrame(fetchedPrice, currentWindowStart);
+                    // Calling closeFrame within the lock
+                    await closeFrame(fetchedPrice, currentWindowStart);
                 }
             }
 
