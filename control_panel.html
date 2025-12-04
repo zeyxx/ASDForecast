@@ -1,7 +1,7 @@
-<!-- ASDForecast CONTROL PANEL v1.7 // FULL HISTORY WITH VAULT STATS -->
+<!-- ASDForecast CONTROL PANEL v1.8 // FULL HISTORY OPEN/CLOSE -->
 
-<script src="https://cdn.tailwindcss.com"></script>
-<link href="https://fonts.googleapis.com/css2?family=Comic+Neue:wght@400;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+<script src="[https://cdn.tailwindcss.com](https://cdn.tailwindcss.com)"></script>
+<link href="[https://fonts.googleapis.com/css2?family=Comic+Neue:wght@400;700&family=JetBrains+Mono:wght@400;700&display=swap](https://fonts.googleapis.com/css2?family=Comic+Neue:wght@400;700&family=JetBrains+Mono:wght@400;700&display=swap)" rel="stylesheet">
 
 <style>
     body { background-color: #0c0c0c; color: #ffedd5; font-family: 'JetBrains Mono', monospace; }
@@ -171,7 +171,7 @@
         </div>
     </div>
 
-    <!-- FULL HISTORY MODAL (UPDATED V1.7) -->
+    <!-- FULL HISTORY MODAL (UPDATED V1.8: ADDED OPEN/CLOSE) -->
     <div id="full-history-modal" class="fixed inset-0 z-50 hidden modal-backdrop flex items-center justify-center">
         <div class="bg-[#1a0f0a] border-2 border-orange-600 rounded-lg w-11/12 h-5/6 max-w-6xl flex flex-col shadow-2xl">
             <div class="p-4 border-b border-orange-900 flex justify-between items-center bg-black/50">
@@ -187,6 +187,10 @@
                         <tr>
                             <th class="pb-2 pl-2">Time</th>
                             <th class="pb-2">Result</th>
+                            <!-- ADDED OPEN/CLOSE -->
+                            <th class="pb-2 text-right">Open</th>
+                            <th class="pb-2 text-right">Close</th>
+                            
                             <th class="pb-2 text-right">Vol</th>
                             <th class="pb-2 text-right">Fee</th>
                             <th class="pb-2 text-right">Upkeep</th>
@@ -204,13 +208,13 @@
     </div>
 
     <div class="mt-8 text-center text-xs text-gray-600">
-        <p>Backend Connection: <span class="font-mono text-orange-900">https://asdforecast.onrender.com</span></p>
+        <p>Backend Connection: <span class="font-mono text-orange-900">[https://asdforecast.onrender.com](https://asdforecast.onrender.com)</span></p>
     </div>
 
 </div>
 
 <script>
-    const API_URL = 'https://asdforecast.onrender.com/api';
+    const API_URL = '[https://asdforecast.onrender.com/api](https://asdforecast.onrender.com/api)';
     
     let fullHistory = [];
     let cachedAdminPassword = null;
@@ -335,7 +339,7 @@
                         <td class="py-1 text-gray-400">${time}</td>
                         <td class="py-1 text-green-200">${h.type}</td>
                         <td class="py-1 font-bold">${h.totalAmount}</td>
-                        <td class="py-1"><a href="https://solscan.io/tx/${h.signature}" target="_blank" class="text-blue-400 hover:underline">View ↗</a></td>
+                        <td class="py-1"><a href="[https://solscan.io/tx/$](https://solscan.io/tx/$){h.signature}" target="_blank" class="text-blue-400 hover:underline">View ↗</a></td>
                     </tr>`;
                 }).join('');
             } else {
@@ -344,7 +348,7 @@
         } catch (e) { console.log("Payout fetch error", e); }
     }
 
-    // NEW: FULL HISTORY (UPDATED V1.7)
+    // NEW: FULL HISTORY
     async function openFullHistory() {
         const pwd = getPassword();
         if (!pwd) return;
@@ -378,6 +382,11 @@
                 <tr class="hover:bg-white/5 border-b border-orange-900/20">
                     <td class="py-2 pl-2 whitespace-nowrap">${time}</td>
                     <td class="py-2 ${resColor}">${f.result}</td>
+                    
+                    <!-- ADDED: Open / Close -->
+                    <td class="py-2 text-right text-gray-300">$${(f.open||0).toFixed(2)}</td>
+                    <td class="py-2 text-right text-gray-300">$${(f.close||0).toFixed(2)}</td>
+                    
                     <td class="py-2 text-right font-bold text-white">${(f.totalSol||0).toFixed(2)}</td>
                     <td class="py-2 text-right text-red-400">${(f.fee||0).toFixed(3)}</td>
                     <td class="py-2 text-right text-orange-300">${(f.upkeep||0).toFixed(3)}</td>
@@ -438,8 +447,10 @@
             if (data.market) {
                 ui.upPrice.innerText = data.market.priceUp.toFixed(4) + " SOL";
                 ui.downPrice.innerText = data.market.priceDown.toFixed(4) + " SOL";
+                
                 const netUp = Math.max(0, data.market.sharesUp - 50);
                 const netDown = Math.max(0, data.market.sharesDown - 50);
+                
                 ui.upShares.innerText = Math.round(netUp).toLocaleString();
                 ui.downShares.innerText = Math.round(netDown).toLocaleString();
             }

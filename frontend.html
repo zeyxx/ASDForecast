@@ -1,4 +1,4 @@
-<!-- ASDForecast v113.0 // UI: IMAGE DISPLAY LOGIC & REFUND STATUS -->
+<!-- ASDForecast v114.0 // FIX: STATUS INDICATOR BEHAVIOR & IMAGE LOADING -->
 
 <!-- Dependencies -->
 <script src="https://cdn.tailwindcss.com"></script>
@@ -94,6 +94,7 @@
                 </div>
 
                 <div class="flex flex-col items-end">
+                    <!-- STATUS INDICATOR (Cleaned up) -->
                     <div id="top-status-indicator" class="flex items-center gap-2 text-xs font-mono bg-black/40 px-3 py-2 rounded border border-red-900/50 text-red-500 transition-colors duration-500">
                         <span id="status-dot" class="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span>
                         <span id="status-text">OFFLINE</span>
@@ -202,7 +203,7 @@
                                     <div class="text-orange-200 italic opacity-50">Waiting for close...</div>
                                 </div>
                                 <!-- DYNAMIC STATUS IMAGE -->
-                                <img id="last-frame-img" src="" class="w-12 h-12 rounded border border-orange-900/50 hidden object-cover" alt="Status">
+                                <img id="last-frame-img" src="" class="w-12 h-12 rounded border border-orange-900/50 hidden object-cover" alt="Status" onerror="this.classList.add('hidden')">
                             </div>
                         </div>
                     </div>
@@ -244,7 +245,6 @@
                     <!-- Link to Solscan -->
                     <a id="link-last-payout" href="https://solscan.io/account/BXSp5y6Ua6tB5fZDe1EscVaaEaZLg1yqzrsPqAXhKJYy" target="_blank" class="text-xl font-bold font-mono text-white hover:text-orange-400 transition-colors underline decoration-dotted decoration-orange-900" title="Verify on Solscan">--</a>
                 </div>
-                <!-- MODIFIED: Header changed from Total Winnings to Lifetime Payouts -->
                 <div><span class="block text-[10px] text-orange-400 font-mono uppercase">Lifetime Payouts</span><span id="global-winnings" class="text-xl font-bold font-mono text-green-400">0.00 SOL</span></div>
                 <div><span class="block text-[10px] text-orange-400 font-mono uppercase">Lifetime Degens</span><span id="global-lifetime-users" class="text-xl font-bold font-mono text-yellow-400">0</span></div>
             </div>
@@ -282,7 +282,7 @@
                 <div class="mt-6 border-t-2 border-red-900/50 pt-4 bg-red-900/10 p-4 rounded"><strong class="text-red-500 block mb-1 text-lg">⚠️ DISCLAIMER & RISK WARNING</strong><p class="text-xs text-orange-200 leading-relaxed">This platform is currently LIVE on Solana Mainnet. The operators are not responsible for lost funds, smart contract errors, oracle latency, or network failures. <br><br><strong>PREDICT RESPONSIBLY:</strong> Never wager funds you cannot afford to lose. This is an experimental technology demonstration.</p></div>
             </div>
         </div>
-        <div class="text-center text-xs text-gray-500 font-mono pt-2 border-t border-orange-900/50"><span class="text-orange-400">Frontend v113.0</span> | Backend <span id="backend-version">v---</span></div>
+        <div class="text-center text-xs text-gray-500 font-mono pt-2 border-t border-orange-900/50"><span class="text-orange-400">Frontend v114.0</span> | Backend <span id="backend-version">v---</span></div>
     </div>
 
     <!-- SHARE MODAL -->
@@ -633,8 +633,10 @@
             const data = await res.json();
             
             state.isOnline = true;
-            if(ui.statusText) { ui.statusText.innerText = "ONLINE"; ui.statusText.className = "text-green-400"; }
-            if(ui.topStatus) ui.topStatus.className = "flex items-center gap-2 text-xs font-mono bg-black/40 px-3 py-2 rounded border border-green-900/50 transition-colors duration-500";
+            // UPDATE: Reset status display to default
+            ui.statusText.innerText = "ONLINE"; 
+            ui.statusText.className = "text-green-400";
+            ui.topStatus.className = "flex items-center gap-2 text-xs font-mono bg-black/40 px-3 py-2 rounded border border-green-900/50 transition-colors duration-500";
             if(ui.lastUpdated && data.lastPriceTimestamp) ui.lastUpdated.innerText = `Price Data: ${new Date(data.lastPriceTimestamp).toLocaleTimeString()}`;
             if(data.backendVersion) ui.backendVersion.innerText = `v${data.backendVersion}`;
 
@@ -751,7 +753,7 @@
                              let res = log.result === 'WIN' ? `<span class="text-green-400">WIN</span>` : `<span class="text-red-400">LOSS</span>`;
                              if (log.result === 'CANCELLED') res = `<span class="text-yellow-500">REFUNDED</span>`;
                              // UPDATE: Check for Refunded Error
-                             if (log.result === 'REFUNDED_ERROR') res = `<span class="text-yellow-500 font-bold">⚠️ REFUNDED</span>`;
+                             if (log.result === 'REFUNDED_ERROR') res = `<span class="text-yellow-500 font-bold">⚠️ ERR: REFUNDED</span>`;
                              
                              // TEXT UPDATE
                              ui.lastFrameStats.innerHTML = `
@@ -773,12 +775,23 @@
                              }
 
                         } else { 
+                            // FIX: If user is connected but hasn't played or frame is active/pending close
                             ui.lastFrameStats.innerHTML = `<span class="italic opacity-50">Waiting for close...</span>`; 
-                            // UPDATE: Show FINE image for default/new users
-                            if (state.images) {
+                            if (state.images.fine) {
                                 ui.lastFrameImg.classList.remove('hidden');
-                                ui.lastFrameImg.src = state.images.fine || '';
+                                ui.lastFrameImg.src = state.images.fine; // Default image
+                            } else {
+                                ui.lastFrameImg.classList.add('hidden');
                             }
+                        }
+                    } else {
+                         // User is connected, but no history data yet
+                         ui.lastFrameStats.innerHTML = `<span class="italic opacity-50">Waiting for first game...</span>`; 
+                         if (state.images.fine) {
+                            ui.lastFrameImg.classList.remove('hidden');
+                            ui.lastFrameImg.src = state.images.fine; // Default image
+                        } else {
+                            ui.lastFrameImg.classList.add('hidden');
                         }
                     }
                 }
@@ -816,6 +829,7 @@
         } catch(e) {
             console.error(e);
             state.isOnline = false;
+            // Removed custom messaging here to let the status indicator default
             if(ui.topStatus) ui.topStatus.className = "flex items-center gap-2 text-xs font-mono bg-black/40 px-3 py-2 rounded border border-red-900/50 transition-colors duration-500";
             if(ui.statusText) { ui.statusText.innerText = "OFFLINE"; ui.statusText.className = "text-red-500"; }
         } finally {
@@ -831,8 +845,7 @@
 
         if (state.targetEndTime && state.targetEndTime <= Date.now() + 500) {
 
-            alert("Market has closed. Calculating results.");
-            return;
+            return alert("Market has closed. Calculating results.");
 
         }
 
@@ -872,17 +885,9 @@
 
             const d = await res.json();
 
-            if(d.success) { 
-                alert(`Bought ${Math.round(d.shares)} shares!`);
-                refreshBalance(); 
-            } else { 
-                alert(d.error);
-            }
+            if(d.success) { alert(`Bought ${Math.round(d.shares)} shares!`); refreshBalance(); } else alert(d.error);
 
-        } catch(e) { 
-            console.error(e); 
-            alert("Tx Failed");
-        } finally { btn.innerHTML = old; btn.disabled = false; }
+        } catch(e) { console.error(e); alert("Tx Failed"); } finally { btn.innerHTML = old; btn.disabled = false; }
 
     }
 </script>
