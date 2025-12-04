@@ -307,7 +307,7 @@
                 <div class="mt-6 border-t-2 border-red-900/50 pt-4 bg-red-900/10 p-4 rounded"><strong class="text-red-500 block mb-1 text-lg">⚠️ DISCLAIMER & RISK WARNING</strong><p class="text-xs text-orange-200 leading-relaxed">This platform is currently LIVE on Solana Mainnet. The operators are not responsible for lost funds, smart contract errors, oracle latency, or network failures. <br><br><strong>PREDICT RESPONSIBLY:</strong> Never wager funds you cannot afford to lose. This is an experimental technology demonstration.</p></div>
             </div>
         </div>
-        <div class="text-center text-xs text-gray-500 font-mono pt-2 border-t border-orange-900/50"><span class="text-orange-400">Frontend v126.0</span> | Backend <span id="backend-version">v---</span></div>
+        <div class="text-center text-xs text-gray-500 font-mono pt-2 border-t border-orange-900/50"><span class="text-orange-400">Frontend v126.1</span> | Backend <span id="backend-version">v---</span></div>
     </div>
 
     <div id="share-modal" class="fixed inset-0 z-50 hidden flex items-center justify-center bg-black/60">
@@ -438,7 +438,11 @@
             btnSentDown: document.getElementById('btn-sent-down'),
             imgSentUp: document.getElementById('img-sent-up'),
             imgSentDown: document.getElementById('img-sent-down'),
-            sentTimer: document.getElementById('sent-timer')
+            sentTimer: document.getElementById('sent-timer'),
+
+            // ABOUT TOGGLE (ADDED v126.1)
+            aboutContent: document.getElementById('about-content'),
+            aboutIcon: document.getElementById('about-icon')
         };
 
         if(ui.btnInc) ui.btnInc.onclick = () => adjustQty(1);
