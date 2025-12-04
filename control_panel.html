@@ -1,4 +1,4 @@
-<!-- ASDForecast CONTROL PANEL v1.2 -->
+<!-- ASDForecast CONTROL PANEL v1.4 // DEBUG LOGS & AUTO-SCROLL -->
 
 <script src="https://cdn.tailwindcss.com"></script>
 <link href="https://fonts.googleapis.com/css2?family=Comic+Neue:wght@400;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
@@ -11,6 +11,21 @@
     .history-scroll { max-height: 500px; overflow-y: auto; }
     .history-scroll::-webkit-scrollbar { width: 6px; }
     .history-scroll::-webkit-scrollbar-thumb { background: #ea580c; border-radius: 3px; }
+    
+    /* DEBUG LOG STYLE */
+    #debug-log-container {
+        height: 300px;
+        overflow-y: auto;
+        font-size: 10px;
+        background-color: #000;
+        border: 1px solid #333;
+        padding: 10px;
+        color: #0f0;
+        white-space: pre-wrap;
+    }
+    #debug-log-container::-webkit-scrollbar { width: 6px; }
+    #debug-log-container::-webkit-scrollbar-thumb { background: #333; }
+
     .blink { animation: blink 1s infinite; }
     @keyframes blink { 50% { opacity: 0.5; } }
 </style>
@@ -25,6 +40,13 @@
         </div>
         
         <div class="flex items-center gap-6">
+
+            <!-- BROADCAST CONTROLS -->
+            <div class="flex items-center gap-2 bg-gray-900 p-2 rounded border border-gray-700">
+                <input type="text" id="broadcast-msg" placeholder="Broadcast Message..." class="bg-black text-white text-xs p-2 rounded border border-gray-600 w-48">
+                <button onclick="updateBroadcast(true)" class="bg-blue-900 border border-blue-500 text-blue-200 px-3 py-1 rounded text-xs font-bold hover:bg-blue-600">ON</button>
+                <button onclick="updateBroadcast(false)" class="bg-gray-800 border border-gray-600 text-gray-400 px-3 py-1 rounded text-xs font-bold hover:bg-gray-700">OFF</button>
+            </div>
             
             <!-- PAUSE CONTROLS -->
             <div class="flex items-center gap-3 bg-gray-900 p-2 rounded border border-gray-700">
@@ -78,6 +100,15 @@
         </div>
     </div>
 
+    <!-- LOGS PANEL (NEW) -->
+    <div class="panel bg-black/40 mb-8">
+        <div class="flex justify-between items-center mb-2">
+            <h3 class="text-lg font-bold text-white">Backend Live Logs</h3>
+            <button onclick="fetchLogs()" class="text-xs text-blue-400 hover:text-white">[ REFRESH ]</button>
+        </div>
+        <div id="debug-log-container">Waiting for logs...</div>
+    </div>
+
     <!-- HISTORY PANEL -->
     <div class="panel bg-black/40">
         <div class="flex justify-between items-center mb-4">
@@ -119,6 +150,7 @@
     
     let fullHistory = [];
     let isHistoryExpanded = false;
+    let cachedAdminPassword = null;
 
     const ui = {
         statusDot: document.getElementById('status-dot'),
@@ -134,7 +166,9 @@
         downShares: document.getElementById('val-down-shares'),
         historyRows: document.getElementById('history-rows'),
         historyContainer: document.getElementById('history-container'),
-        btnExpand: document.getElementById('btn-expand-history')
+        btnExpand: document.getElementById('btn-expand-history'),
+        broadcastMsg: document.getElementById('broadcast-msg'),
+        logsContainer: document.getElementById('debug-log-container')
     };
 
     function toggleHistory() {
@@ -190,10 +224,16 @@
         }
     }
 
+    function getPassword() {
+        if (cachedAdminPassword) return cachedAdminPassword;
+        const pwd = prompt("ENTER ADMIN ACTION PASSWORD:");
+        if (pwd) cachedAdminPassword = pwd;
+        return pwd;
+    }
+
     // --- ADMIN ACTIONS ---
     async function togglePause() {
-        // Prompt user for password; Backend checks this against ADMIN_ACTION_PASSWORD env var
-        const pwd = prompt("ENTER ADMIN ACTION PASSWORD TO PAUSE/RESUME:");
+        const pwd = getPassword();
         if (!pwd) return;
 
         try {
@@ -203,14 +243,17 @@
             });
             const data = await res.json();
             if (data.success) alert(`SUCCESS: Market is now ${data.isPaused ? "PAUSED" : "ACTIVE"}`);
-            else alert("Error: " + data.error);
+            else {
+                alert("Error: " + data.error);
+                cachedAdminPassword = null; // Clear cache on error
+            }
         } catch (e) { alert("Network Error"); }
     }
 
     async function cancelFrame() {
         if (!confirm("⚠️ DANGER: CANCEL THIS FRAME? This refunds 99% of bets and PAUSES the market.")) return;
         
-        const pwd = prompt("ENTER ADMIN ACTION PASSWORD:");
+        const pwd = getPassword();
         if (!pwd) return;
 
         try {
@@ -220,8 +263,55 @@
             });
             const data = await res.json();
             if (data.success) alert("Frame Cancelled. Market Paused.");
-            else alert("Error: " + data.error);
+            else {
+                alert("Error: " + data.error);
+                cachedAdminPassword = null;
+            }
         } catch (e) { alert("Network Error"); }
+    }
+
+    async function updateBroadcast(isActive) {
+        const msg = ui.broadcastMsg.value;
+        if (!msg && isActive) return alert("Please enter a message first.");
+
+        const pwd = getPassword();
+        if (!pwd) return;
+
+        try {
+            const res = await fetch(`${API_URL}/admin/broadcast`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'x-admin-secret': pwd },
+                body: JSON.stringify({ message: msg, isActive: isActive })
+            });
+            const data = await res.json();
+            if (data.success) {
+                alert(`Broadcast Updated: ${isActive ? "ON" : "OFF"}`);
+            } else {
+                alert("Error: " + data.error);
+                cachedAdminPassword = null;
+            }
+        } catch (e) { alert("Network Error"); }
+    }
+
+    // NEW: FETCH LOGS
+    async function fetchLogs() {
+        if (!cachedAdminPassword) return; // Don't fetch if not auth'd yet
+
+        try {
+            const res = await fetch(`${API_URL}/admin/logs`, {
+                headers: { 'x-admin-secret': cachedAdminPassword }
+            });
+            if (res.status === 403) {
+                 // Silent fail or prompt logic could go here, but keep simple for polling
+                 return; 
+            }
+            const data = await res.json();
+            if (data.logs) {
+                ui.logsContainer.innerText = data.logs.join('\n');
+                // Auto-scroll to bottom
+                ui.logsContainer.scrollTop = ui.logsContainer.scrollHeight;
+            }
+        } catch (e) { console.log("Log fetch error", e); }
     }
 
     async function poll() {
@@ -284,5 +374,6 @@
     }
 
     setInterval(poll, 2000);
+    setInterval(fetchLogs, 2000); // Poll logs separately
     poll();
 </script>

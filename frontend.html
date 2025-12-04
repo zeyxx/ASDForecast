@@ -1,4 +1,4 @@
-<!-- ASDForecast v112.1 // UI: ADMIN BROADCAST -->
+<!-- ASDForecast v113.0 // UI: IMAGE DISPLAY LOGIC & DEFAULT -->
 
 <!-- Dependencies -->
 <script src="https://cdn.tailwindcss.com"></script>
@@ -88,7 +88,7 @@
                 </div>
             </div>
             <div class="flex items-center gap-4">
-                <!-- NEW: ADMIN BROADCAST CONTAINER -->
+                <!-- ADMIN BROADCAST CONTAINER -->
                 <div id="admin-broadcast-container" class="hidden broadcast-box px-4 py-2 rounded text-xs font-mono font-bold uppercase tracking-wide">
                     📢 <span id="broadcast-text"></span>
                 </div>
@@ -282,7 +282,7 @@
                 <div class="mt-6 border-t-2 border-red-900/50 pt-4 bg-red-900/10 p-4 rounded"><strong class="text-red-500 block mb-1 text-lg">⚠️ DISCLAIMER & RISK WARNING</strong><p class="text-xs text-orange-200 leading-relaxed">This platform is currently LIVE on Solana Mainnet. The operators are not responsible for lost funds, smart contract errors, oracle latency, or network failures. <br><br><strong>PREDICT RESPONSIBLY:</strong> Never wager funds you cannot afford to lose. This is an experimental technology demonstration.</p></div>
             </div>
         </div>
-        <div class="text-center text-xs text-gray-500 font-mono pt-2 border-t border-orange-900/50"><span class="text-orange-400">Frontend v112.1</span> | Backend <span id="backend-version">v---</span></div>
+        <div class="text-center text-xs text-gray-500 font-mono pt-2 border-t border-orange-900/50"><span class="text-orange-400">Frontend v113.0</span> | Backend <span id="backend-version">v---</span></div>
     </div>
 
     <!-- SHARE MODAL -->
@@ -770,7 +770,11 @@
 
                         } else { 
                             ui.lastFrameStats.innerHTML = `<span class="italic opacity-50">Waiting for close...</span>`; 
-                            ui.lastFrameImg.classList.add('hidden');
+                            // UPDATE: Show FINE image for default/new users
+                            if (state.images) {
+                                ui.lastFrameImg.classList.remove('hidden');
+                                ui.lastFrameImg.src = state.images.fine || '';
+                            }
                         }
                     }
                 }
@@ -830,10 +834,7 @@
 
 
 
-        if(!state.isOnline) { 
-            alert("System Offline");
-            return; 
-        }
+        if(!state.isOnline) return alert("System Offline");
 
         const qty = parseInt(ui.qty.value);
 
@@ -867,17 +868,9 @@
 
             const d = await res.json();
 
-            if(d.success) { 
-                alert(`Bought ${Math.round(d.shares)} shares!`);
-                refreshBalance(); 
-            } else { 
-                alert(d.error);
-            }
+            if(d.success) { alert(`Bought ${Math.round(d.shares)} shares!`); refreshBalance(); } else alert(d.error);
 
-        } catch(e) { 
-            console.error(e); 
-            alert("Tx Failed");
-        } finally { btn.innerHTML = old; btn.disabled = false; }
+        } catch(e) { console.error(e); alert("Tx Failed"); } finally { btn.innerHTML = old; btn.disabled = false; }
 
     }
 </script>
