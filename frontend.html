@@ -307,7 +307,7 @@
                 <div class="mt-6 border-t-2 border-red-900/50 pt-4 bg-red-900/10 p-4 rounded"><strong class="text-red-500 block mb-1 text-lg">⚠️ DISCLAIMER & RISK WARNING</strong><p class="text-xs text-orange-200 leading-relaxed">This platform is currently LIVE on Solana Mainnet. The operators are not responsible for lost funds, smart contract errors, oracle latency, or network failures. <br><br><strong>PREDICT RESPONSIBLY:</strong> Never wager funds you cannot afford to lose. This is an experimental technology demonstration.</p></div>
             </div>
         </div>
-        <div class="text-center text-xs text-gray-500 font-mono pt-2 border-t border-orange-900/50"><span class="text-orange-400">Frontend v126.1</span> | Backend <span id="backend-version">v---</span></div>
+        <div class="text-center text-xs text-gray-500 font-mono pt-2 border-t border-orange-900/50"><span class="text-orange-400">Frontend v126.2</span> | Backend <span id="backend-version">v---</span></div>
     </div>
 
     <div id="share-modal" class="fixed inset-0 z-50 hidden flex items-center justify-center bg-black/60">
@@ -365,7 +365,7 @@
     const HELIUS_RPC_URL = "https://mainnet.helius-rpc.com/?api-key=3ce79dab-c031-4ebe-a060-edc91bf0edee";
     
     let PublicKey, SystemProgram, Transaction;
-    let state = { pubKey: null, prices: { up: 0.05, down: 0.05 }, conn: null, fullHistory: [], lastFrameId: null, userLog: {}, isHistoryExpanded: false, isAboutExpanded: false, isOnline: false, targetEndTime: null, isResetting: false, isCancelled: false, baseImageSrc: null, images: { fine: null, over: null, sentUp: null, sentDown: null } };
+    let state = { pubKey: null, prices: { up: 0.05, down: 0.05 }, conn: null, fullHistory: [], lastFrameId: null, userLog: {}, isHistoryExpanded: false, isAboutExpanded: false, isOnline: false, targetEndTime: null, isResetting: false, isCancelled: false, baseImageSrc: null, images: { fine: null, over: null, sentUp: null, sentDown: null }, solBalance: 0 };
     let ui = {};
     let pollTimeout = null; // Store timeout ID for cleanup
 
@@ -440,7 +440,7 @@
             imgSentDown: document.getElementById('img-sent-down'),
             sentTimer: document.getElementById('sent-timer'),
 
-            // ABOUT TOGGLE (ADDED v126.1)
+            // ABOUT TOGGLE 
             aboutContent: document.getElementById('about-content'),
             aboutIcon: document.getElementById('about-icon')
         };
@@ -450,6 +450,7 @@
 
         ui.connect.onclick = connect;
         ui.disconnect.onclick = disconnectWallet;
+        // Call updateCosts when quantity changes
         ui.qty.oninput = () => { ui.qty.value = Math.floor(Math.max(1, ui.qty.value)); updateCosts(); };
 
         // Fetch Images immediately
@@ -579,11 +580,68 @@
     };
 
     async function connect() { try { await window.solana.connect(); onConnect(await window.solana.connect()); } catch(e){} }
-    async function disconnectWallet() { if(window.solana) await window.solana.disconnect(); state.pubKey = null; state.userLog = {}; ui.connect.innerText = "Connect Phantom"; ui.form.classList.add('opacity-50', 'pointer-events-none'); ui.disconnect.classList.add('hidden'); ui.bal.innerText = "0.0000"; ui.statsContainer.classList.add('hidden'); renderHistory(); }
-    function onConnect(resp) { state.pubKey = resp.publicKey; ui.connect.innerText = `👤 ${resp.publicKey.toString().slice(0,4)}...`; ui.form.classList.remove('opacity-50', 'pointer-events-none'); ui.disconnect.classList.remove('hidden'); refreshBalance(); poll(); }
-    async function refreshBalance() { if(state.pubKey) { const bal = await state.conn.getBalance(state.pubKey); ui.bal.innerText = (bal/1e9).toFixed(4); } }
+    async function disconnectWallet() { 
+        if(window.solana) await window.solana.disconnect(); 
+        state.pubKey = null; 
+        state.solBalance = 0; // RESET BALANCE
+        state.userLog = {}; 
+        ui.connect.innerText = "Connect Phantom"; 
+        ui.form.classList.add('opacity-50', 'pointer-events-none'); 
+        ui.disconnect.classList.add('hidden'); 
+        ui.bal.innerText = "0.0000"; 
+        ui.statsContainer.classList.add('hidden'); 
+        renderHistory(); 
+        updateCosts(); // Update costs to reflect zero balance
+    }
+    function onConnect(resp) { 
+        state.pubKey = resp.publicKey; 
+        ui.connect.innerText = `👤 ${resp.publicKey.toString().slice(0,4)}...`; 
+        ui.form.classList.remove('opacity-50', 'pointer-events-none'); 
+        ui.disconnect.classList.remove('hidden'); 
+        refreshBalance(); 
+        poll(); 
+    }
+
+    // UPDATED: Now stores balance in state.solBalance and calls updateCosts
+    async function refreshBalance() { 
+        if(state.pubKey) { 
+            const bal = await state.conn.getBalance(state.pubKey); 
+            state.solBalance = bal / 1e9; // Store balance in SOL
+            ui.bal.innerText = state.solBalance.toFixed(4); 
+            updateCosts(); // Call updateCosts after updating balance
+        } 
+    }
+    
     function adjustQty(n) { if(ui.qty.disabled) return; let v = parseInt(ui.qty.value) + n; if(v < 1) v = 1; ui.qty.value = Math.floor(v); updateCosts(); }
-    function updateCosts() { const q = parseInt(ui.qty.value) || 0; if(state.prices.up && ui.costUp) { ui.costUp.innerText = (q * state.prices.up).toFixed(3) + " SOL"; ui.costDown.innerText = (q * state.prices.down).toFixed(3) + " SOL"; } }
+    
+    // UPDATED: Now performs balance validation and disables buttons
+    function updateCosts() { 
+        const q = parseInt(ui.qty.value) || 0; 
+        
+        if(state.prices.up && ui.costUp) { 
+            const costUp = q * state.prices.up;
+            const costDown = q * state.prices.down;
+            
+            ui.costUp.innerText = costUp.toFixed(3) + " SOL"; 
+            ui.costDown.innerText = costDown.toFixed(3) + " SOL"; 
+            
+            // Validation: Check if cost exceeds the user's current balance
+            const hasUpFunds = costUp <= state.solBalance;
+            const hasDownFunds = costDown <= state.solBalance;
+            
+            // Disable buttons if out of funds OR if market is paused/resetting
+            const isMarketOpen = !ui.pauseOverlay.classList.contains('hidden');
+            ui.btnUp.disabled = !hasUpFunds || isMarketOpen;
+            ui.btnDown.disabled = !hasDownFunds || isMarketOpen;
+
+            // Visual feedback for insufficient funds
+            if (!hasUpFunds) { ui.costUp.classList.add('text-red-500'); ui.costUp.classList.remove('text-green-300'); }
+            else { ui.costUp.classList.remove('text-red-500'); ui.costUp.classList.add('text-green-300'); }
+            
+            if (!hasDownFunds) { ui.costDown.classList.add('text-red-500'); ui.costDown.classList.remove('text-red-300'); }
+            else { ui.costDown.classList.remove('text-red-500'); ui.costDown.classList.add('text-red-300'); }
+        } 
+    }
 
     // --- SHARE STATS LOGIC (UPDATED) ---
     window.openShareModal = async function() {
@@ -740,7 +798,7 @@
                 } else {
                      // OPEN
                      ui.netSharesHeader.innerText = "Net Shares Bought"; ui.netSharesHeader.classList.remove("text-red-500", "text-blue-400", "animate-pulse");
-                     ui.btnUp.disabled = false; ui.btnDown.disabled = false; ui.qty.disabled = false;
+                     // Buttons are handled by updateCosts() based on balance now
                      ui.pauseOverlay.classList.add('hidden');
                 }
             }
@@ -910,6 +968,7 @@
                 }
             } catch(e) { console.log("Stats Render Error", e); }
             
+            // CRUCIAL: Re-run costs update after new market data (prices) is fetched
             updateCosts();
 
         } catch(e) {
@@ -936,21 +995,23 @@
 
         }
 
-
-
         if(!state.isOnline) return alert("System Offline");
 
         const qty = parseInt(ui.qty.value);
 
         const cost = qty * (dir==='UP'?state.prices.up:state.prices.down);
+        
+        // FINAL VALIDATION CHECK
+        if (cost > state.solBalance) {
+            alert(`Insufficient funds. Cost is ${cost.toFixed(4)} SOL but you only have ${state.solBalance.toFixed(4)} SOL.`);
+            return;
+        }
 
         const btn = dir==='UP'?ui.btnUp:ui.btnDown;
 
         const old = btn.innerHTML;
 
         btn.innerHTML = "SIGNING..."; btn.disabled = true;
-
-
 
         try {
 
@@ -982,7 +1043,7 @@
         } catch(e) { 
             console.error(e); 
             alert("Tx Failed");
-        } finally { btn.innerHTML = old; btn.disabled = false; }
+        } finally { btn.innerHTML = old; btn.disabled = false; updateCosts(); } // Re-enable and update costs/disable state
 
     }
 </script>
