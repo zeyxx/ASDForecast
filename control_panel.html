@@ -1,4 +1,4 @@
-<!-- ASDForecast CONTROL PANEL v1.2 -->
+<!-- ASDForecast CONTROL PANEL v1.3 // LOTTERY CONTROLS -->
 
 <script src="https://cdn.tailwindcss.com"></script>
 <link href="https://fonts.googleapis.com/css2?family=Comic+Neue:wght@400;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
@@ -42,6 +42,11 @@
                 ⚠️ Cancel & Refund
             </button>
 
+            <!-- LOTTERY DRAW -->
+            <button onclick="triggerLotteryDraw()" class="bg-purple-900 border border-purple-500 text-purple-200 px-4 py-2 rounded text-xs font-bold hover:bg-purple-600 hover:text-white transition-colors uppercase">
+                🎟️ Lottery Draw
+            </button>
+
             <!-- CONNECTION STATUS -->
             <div id="status-box" class="flex items-center gap-2 px-3 py-1 bg-black border border-gray-800 rounded h-10">
                 <span class="w-2 h-2 rounded-full bg-gray-500" id="status-dot"></span>
@@ -56,6 +61,29 @@
         <div class="panel"> <div class="stat-label">Active Wallets</div> <div id="val-users" class="stat-value">0</div> </div>
         <div class="panel"> <div class="stat-label">Time Remaining</div> <div id="val-timer" class="stat-value text-yellow-400">--:--</div> </div>
         <div class="panel"> <div class="stat-label">SOL Price</div> <div id="val-price" class="stat-value">$0.00</div> </div>
+    </div>
+
+    <!-- LOTTERY STATUS -->
+    <div class="panel mb-8 border-purple-900/50">
+        <h3 class="text-purple-400 font-bold mb-4 border-b border-purple-900/30 pb-2">🎟️ LOTTERY STATUS</h3>
+        <div class="grid grid-cols-4 gap-4">
+            <div>
+                <div class="stat-label text-purple-700">Current Round</div>
+                <div id="val-lottery-round" class="text-xl font-bold text-white">#--</div>
+            </div>
+            <div>
+                <div class="stat-label text-purple-700">Next Draw</div>
+                <div id="val-lottery-countdown" class="text-xl font-bold text-purple-400">--</div>
+            </div>
+            <div>
+                <div class="stat-label text-purple-700">Last Winner</div>
+                <div id="val-lottery-winner" class="text-xl font-bold text-green-400">--</div>
+            </div>
+            <div>
+                <div class="stat-label text-purple-700">Last Prize</div>
+                <div id="val-lottery-prize" class="text-xl font-bold text-yellow-400">-- ASDF</div>
+            </div>
+        </div>
     </div>
 
     <!-- MARKET DEPTH -->
@@ -134,7 +162,12 @@
         downShares: document.getElementById('val-down-shares'),
         historyRows: document.getElementById('history-rows'),
         historyContainer: document.getElementById('history-container'),
-        btnExpand: document.getElementById('btn-expand-history')
+        btnExpand: document.getElementById('btn-expand-history'),
+        // Lottery UI
+        lotteryRound: document.getElementById('val-lottery-round'),
+        lotteryCountdown: document.getElementById('val-lottery-countdown'),
+        lotteryWinner: document.getElementById('val-lottery-winner'),
+        lotteryPrize: document.getElementById('val-lottery-prize')
     };
 
     function toggleHistory() {
@@ -209,19 +242,52 @@
 
     async function cancelFrame() {
         if (!confirm("⚠️ DANGER: CANCEL THIS FRAME? This refunds 99% of bets and PAUSES the market.")) return;
-        
+
         const pwd = prompt("ENTER ADMIN ACTION PASSWORD:");
         if (!pwd) return;
 
         try {
             const res = await fetch(`${API_URL}/admin/cancel-frame`, {
                 method: 'POST',
-                headers: { 'x-admin-secret': pwd } 
+                headers: { 'x-admin-secret': pwd }
             });
             const data = await res.json();
             if (data.success) alert("Frame Cancelled. Market Paused.");
             else alert("Error: " + data.error);
         } catch (e) { alert("Network Error"); }
+    }
+
+    async function triggerLotteryDraw() {
+        if (!confirm("🎟️ TRIGGER MANUAL LOTTERY DRAW? This will select a winner now regardless of schedule.")) return;
+
+        const pwd = prompt("ENTER ADMIN ACTION PASSWORD:");
+        if (!pwd) return;
+
+        try {
+            const res = await fetch(`${API_URL}/admin/lottery/draw`, {
+                method: 'POST',
+                headers: { 'x-admin-secret': pwd }
+            });
+            const data = await res.json();
+            if (data.success) {
+                alert(`🎉 LOTTERY DRAW COMPLETE!\n\nRound: ${data.round}\nWinner: ${data.winner.slice(0,8)}...\nPrize: ${data.prize.toLocaleString()} ASDF\nTotal Tickets: ${data.totalTickets}\nParticipants: ${data.participantCount}`);
+            } else {
+                alert("Draw failed: " + (data.reason || data.error));
+            }
+        } catch (e) {
+            console.error(e);
+            alert("Network Error");
+        }
+    }
+
+    function formatLotteryCountdown(ms) {
+        if (ms <= 0) return "NOW";
+        const days = Math.floor(ms / (24 * 60 * 60 * 1000));
+        const hours = Math.floor((ms % (24 * 60 * 60 * 1000)) / (60 * 60 * 1000));
+        const mins = Math.floor((ms % (60 * 60 * 1000)) / (60 * 1000));
+        if (days > 0) return `${days}d ${hours}h`;
+        if (hours > 0) return `${hours}h ${mins}m`;
+        return `${mins}m`;
     }
 
     async function poll() {
@@ -271,6 +337,20 @@
 
             fullHistory = data.history || [];
             renderHistory();
+
+            // Update lottery UI
+            if (data.lottery) {
+                ui.lotteryRound.innerText = '#' + (data.lottery.currentRound || '--');
+                ui.lotteryCountdown.innerText = formatLotteryCountdown(data.lottery.msUntilDraw || 0);
+
+                if (data.lottery.recentWinner) {
+                    ui.lotteryWinner.innerText = data.lottery.recentWinner.slice(0, 8) + '...';
+                    ui.lotteryPrize.innerText = (data.lottery.recentPrize || 0).toLocaleString() + ' ASDF';
+                } else {
+                    ui.lotteryWinner.innerText = 'No draws yet';
+                    ui.lotteryPrize.innerText = '-- ASDF';
+                }
+            }
 
         } catch (e) {
             ui.statusDot.classList.remove('bg-green-500', 'blink');

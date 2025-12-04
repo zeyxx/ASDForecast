@@ -1,4 +1,4 @@
-<!-- ASDForecast v111.4 // UI: LIFETIME PAYOUTS & SHARE FONT STYLE MATCH -->
+<!-- ASDForecast v112.0 // UI: LOTTERY SYSTEM -->
 
 <!-- Dependencies -->
 <script src="https://cdn.tailwindcss.com"></script>
@@ -247,6 +247,64 @@
             </div>
         </div>
 
+        <!-- LOTTERY SECTION -->
+        <div class="panel p-6 bg-black/40 mb-8 border-2 border-yellow-600">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="text-lg font-bold text-yellow-400">🎟️ Weekly ASDF Lottery</h3>
+                <span class="text-xs font-mono bg-yellow-900/30 px-2 py-1 rounded text-yellow-300">Round #<span id="lottery-round">--</span></span>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                <!-- Next Draw -->
+                <div class="bg-black/30 p-4 rounded border border-yellow-900/50 text-center">
+                    <span class="block text-[10px] text-yellow-500 font-mono uppercase mb-1">Next Draw</span>
+                    <span id="lottery-countdown" class="text-2xl font-mono font-bold text-white">--d --h --m</span>
+                </div>
+
+                <!-- Your Tickets -->
+                <div class="bg-black/30 p-4 rounded border border-yellow-900/50 text-center">
+                    <span class="block text-[10px] text-yellow-500 font-mono uppercase mb-1">Your Tickets</span>
+                    <span id="lottery-tickets" class="text-2xl font-mono font-bold text-yellow-400">--</span>
+                    <span id="lottery-tickets-max" class="text-xs text-gray-500 block">/52 max</span>
+                    <span id="lottery-activity" class="text-[10px] text-cyan-400 block mt-1">Activity: --/7 days</span>
+                </div>
+
+                <!-- Recent Winner -->
+                <div class="bg-black/30 p-4 rounded border border-yellow-900/50 text-center">
+                    <span class="block text-[10px] text-yellow-500 font-mono uppercase mb-1">Last Winner</span>
+                    <span id="lottery-winner" class="text-lg font-mono font-bold text-green-400">--</span>
+                    <span id="lottery-prize" class="text-xs text-yellow-300 block">-- ASDF</span>
+                </div>
+            </div>
+
+            <!-- Eligibility Info -->
+            <div id="lottery-eligibility" class="bg-yellow-900/20 p-3 rounded border border-yellow-900/30 text-xs font-mono">
+                <div class="flex justify-between items-center">
+                    <span class="text-yellow-400">Eligibility:</span>
+                    <span id="lottery-status" class="text-gray-400">Connect wallet to check</span>
+                </div>
+                <div class="flex justify-between items-center mt-1 text-gray-500">
+                    <span>Required: ≥0.00552% of supply</span>
+                    <span id="lottery-threshold">-- ASDF</span>
+                </div>
+                <div id="lottery-holding-info" class="hidden mt-2 pt-2 border-t border-yellow-900/30">
+                    <div class="flex justify-between">
+                        <span class="text-yellow-400">Your Balance:</span>
+                        <span id="lottery-balance" class="text-white">-- ASDF</span>
+                    </div>
+                    <div class="flex justify-between">
+                        <span class="text-yellow-400">Weeks Holding:</span>
+                        <span id="lottery-weeks" class="text-white">--</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- How it works -->
+            <div class="mt-4 text-[10px] text-gray-500 font-mono">
+                <strong class="text-yellow-500">How it works:</strong> Hold ≥0.00552% ASDF + play daily for 7/7 days = 100% tickets. Base tickets = 1 + weeks holding (max 52). Activity multiplier = days active / 7. Organic & libertarian: no gaming, just play.
+            </div>
+        </div>
+
         <!-- ABOUT SECTION (FULLY EXPANDED) -->
         <div class="panel p-6 bg-black/40">
             <button onclick="window.toggleAbout()" class="w-full text-left flex justify-between items-center text-orange-400 hover:text-white transition-colors"><span class="font-bold text-lg font-mono">>> METHODOLOGY & MECHANICS</span><span id="about-icon">[ + ]</span></button>
@@ -334,7 +392,20 @@
             frameUsers: document.getElementById('frame-users'),
             globalLastPayout: document.getElementById('link-last-payout'), // Changed ID to target anchor tag
             globalWinnings: document.getElementById('global-winnings'),
-            globalLifetimeUsers: document.getElementById('global-lifetime-users')
+            globalLifetimeUsers: document.getElementById('global-lifetime-users'),
+
+            // LOTTERY UI ELEMENTS
+            lotteryRound: document.getElementById('lottery-round'),
+            lotteryCountdown: document.getElementById('lottery-countdown'),
+            lotteryTickets: document.getElementById('lottery-tickets'),
+            lotteryActivity: document.getElementById('lottery-activity'),
+            lotteryWinner: document.getElementById('lottery-winner'),
+            lotteryPrize: document.getElementById('lottery-prize'),
+            lotteryStatus: document.getElementById('lottery-status'),
+            lotteryThreshold: document.getElementById('lottery-threshold'),
+            lotteryHoldingInfo: document.getElementById('lottery-holding-info'),
+            lotteryBalance: document.getElementById('lottery-balance'),
+            lotteryWeeks: document.getElementById('lottery-weeks')
         };
 
         if(ui.btnInc) ui.btnInc.onclick = () => adjustQty(1);
@@ -402,8 +473,8 @@
     };
 
     async function connect() { try { await window.solana.connect(); onConnect(await window.solana.connect()); } catch(e){} }
-    async function disconnectWallet() { if(window.solana) await window.solana.disconnect(); state.pubKey = null; state.userLog = {}; ui.connect.innerText = "Connect Phantom"; ui.form.classList.add('opacity-50', 'pointer-events-none'); ui.disconnect.classList.add('hidden'); ui.bal.innerText = "0.0000"; ui.statsContainer.classList.add('hidden'); renderHistory(); }
-    function onConnect(resp) { state.pubKey = resp.publicKey; ui.connect.innerText = `👤 ${resp.publicKey.toString().slice(0,4)}...`; ui.form.classList.remove('opacity-50', 'pointer-events-none'); ui.disconnect.classList.remove('hidden'); refreshBalance(); poll(); }
+    async function disconnectWallet() { if(window.solana) await window.solana.disconnect(); state.pubKey = null; state.userLog = {}; ui.connect.innerText = "Connect Phantom"; ui.form.classList.add('opacity-50', 'pointer-events-none'); ui.disconnect.classList.add('hidden'); ui.bal.innerText = "0.0000"; ui.statsContainer.classList.add('hidden'); renderHistory(); if(lotteryEligibilityInterval) { clearInterval(lotteryEligibilityInterval); lotteryEligibilityInterval = null; } fetchLotteryEligibility(); }
+    function onConnect(resp) { state.pubKey = resp.publicKey; ui.connect.innerText = `👤 ${resp.publicKey.toString().slice(0,4)}...`; ui.form.classList.remove('opacity-50', 'pointer-events-none'); ui.disconnect.classList.remove('hidden'); refreshBalance(); poll(); startLotteryEligibilityPolling(); }
     async function refreshBalance() { if(state.pubKey) { const bal = await state.conn.getBalance(state.pubKey); ui.bal.innerText = (bal/1e9).toFixed(4); } }
     function adjustQty(n) { if(ui.qty.disabled) return; let v = parseInt(ui.qty.value) + n; if(v < 1) v = 1; ui.qty.value = Math.floor(v); updateCosts(); }
     function updateCosts() { const q = parseInt(ui.qty.value) || 0; if(state.prices.up && ui.costUp) { ui.costUp.innerText = (q * state.prices.up).toFixed(3) + " SOL"; ui.costDown.innerText = (q * state.prices.down).toFixed(3) + " SOL"; } }
@@ -585,6 +656,102 @@
         `).join('');
     }
 
+    // --- LOTTERY FUNCTIONS ---
+    function formatLotteryCountdown(ms) {
+        if (ms <= 0) return "Drawing...";
+        const days = Math.floor(ms / (24 * 60 * 60 * 1000));
+        const hours = Math.floor((ms % (24 * 60 * 60 * 1000)) / (60 * 60 * 1000));
+        const mins = Math.floor((ms % (60 * 60 * 1000)) / (60 * 1000));
+        if (days > 0) return `${days}d ${hours}h ${mins}m`;
+        if (hours > 0) return `${hours}h ${mins}m`;
+        return `${mins}m`;
+    }
+
+    function updateLotteryUI(lotteryData) {
+        if (!lotteryData || !ui.lotteryRound) return;
+
+        // Update round and countdown from cached state data
+        ui.lotteryRound.innerText = lotteryData.currentRound || '--';
+        ui.lotteryCountdown.innerText = formatLotteryCountdown(lotteryData.msUntilDraw || 0);
+
+        // Update recent winner
+        if (lotteryData.recentWinner) {
+            ui.lotteryWinner.innerText = lotteryData.recentWinner.slice(0, 6) + '...';
+            ui.lotteryPrize.innerText = (lotteryData.recentPrize || 0).toLocaleString() + ' ASDF';
+        } else {
+            ui.lotteryWinner.innerText = 'No draws yet';
+            ui.lotteryPrize.innerText = '--';
+        }
+    }
+
+    async function fetchLotteryEligibility() {
+        if (!state.pubKey) {
+            ui.lotteryStatus.innerText = 'Connect wallet to check';
+            ui.lotteryStatus.className = 'text-gray-400';
+            ui.lotteryTickets.innerText = '--';
+            ui.lotteryActivity.innerText = 'Activity: --/7 days';
+            ui.lotteryHoldingInfo.classList.add('hidden');
+            return;
+        }
+
+        try {
+            const res = await fetch(`${API_URL}/lottery/eligibility?user=${state.pubKey.toString()}`);
+            if (!res.ok) throw new Error('Failed to fetch eligibility');
+            const data = await res.json();
+
+            // Update threshold
+            ui.lotteryThreshold.innerText = Math.round(data.threshold).toLocaleString() + ' ASDF';
+
+            // Update tickets (effective tickets with activity multiplier applied)
+            ui.lotteryTickets.innerText = data.tickets || 0;
+
+            // Update activity display
+            const activeDays = data.activeDays || 0;
+            const windowDays = data.activityWindowDays || 7;
+            const multiplier = data.activityMultiplier || 0;
+            ui.lotteryActivity.innerText = `Activity: ${activeDays}/${windowDays} days (${Math.round(multiplier * 100)}%)`;
+
+            // Color code activity
+            if (activeDays >= windowDays) {
+                ui.lotteryActivity.className = 'text-[10px] text-green-400 block mt-1';
+            } else if (activeDays > 0) {
+                ui.lotteryActivity.className = 'text-[10px] text-yellow-400 block mt-1';
+            } else {
+                ui.lotteryActivity.className = 'text-[10px] text-red-400 block mt-1';
+            }
+
+            // Update eligibility status
+            if (data.isEligible && data.tickets > 0) {
+                ui.lotteryStatus.innerText = 'ELIGIBLE';
+                ui.lotteryStatus.className = 'text-green-400 font-bold';
+            } else if (data.isEligible && data.tickets === 0) {
+                ui.lotteryStatus.innerText = 'NEED ACTIVITY';
+                ui.lotteryStatus.className = 'text-yellow-400';
+            } else {
+                ui.lotteryStatus.innerText = 'NOT ELIGIBLE';
+                ui.lotteryStatus.className = 'text-red-400';
+            }
+
+            // Show holding info
+            ui.lotteryHoldingInfo.classList.remove('hidden');
+            ui.lotteryBalance.innerText = Math.round(data.balance).toLocaleString() + ' ASDF';
+            ui.lotteryWeeks.innerText = data.weeksHolding || 0;
+
+        } catch (e) {
+            console.error('Lottery eligibility error:', e);
+            ui.lotteryStatus.innerText = 'Error checking';
+            ui.lotteryStatus.className = 'text-red-400';
+        }
+    }
+
+    // Fetch eligibility periodically (every 60 seconds) when wallet connected
+    let lotteryEligibilityInterval = null;
+    function startLotteryEligibilityPolling() {
+        if (lotteryEligibilityInterval) clearInterval(lotteryEligibilityInterval);
+        fetchLotteryEligibility();
+        lotteryEligibilityInterval = setInterval(fetchLotteryEligibility, 60000);
+    }
+
     async function poll() {
         // Prevent polling if tab hidden (redundant check for safety)
         if (document.hidden) return;
@@ -723,6 +890,9 @@
                 renderHistory();
                 if(data.recentTrades) renderTicker(data.recentTrades);
                 if(data.leaderboard) renderLeaderboard(data.leaderboard);
+
+                // Update lottery UI from cached state
+                if(data.lottery) updateLotteryUI(data.lottery);
 
                 if(data.activePosition) {
                     const uS = data.activePosition.upShares || 0;
