@@ -1,4 +1,4 @@
-<!-- ASDForecast CONTROL PANEL v1.6 // FULL HISTORY MODAL -->
+<!-- ASDForecast CONTROL PANEL v1.7 // FULL HISTORY WITH VAULT STATS -->
 
 <script src="https://cdn.tailwindcss.com"></script>
 <link href="https://fonts.googleapis.com/css2?family=Comic+Neue:wght@400;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
@@ -171,9 +171,9 @@
         </div>
     </div>
 
-    <!-- FULL HISTORY MODAL (NEW) -->
+    <!-- FULL HISTORY MODAL (UPDATED V1.7) -->
     <div id="full-history-modal" class="fixed inset-0 z-50 hidden modal-backdrop flex items-center justify-center">
-        <div class="bg-[#1a0f0a] border-2 border-orange-600 rounded-lg w-11/12 h-5/6 max-w-4xl flex flex-col shadow-2xl">
+        <div class="bg-[#1a0f0a] border-2 border-orange-600 rounded-lg w-11/12 h-5/6 max-w-6xl flex flex-col shadow-2xl">
             <div class="p-4 border-b border-orange-900 flex justify-between items-center bg-black/50">
                 <h2 class="text-xl font-bold text-white">FULL FRAME HISTORY</h2>
                 <div class="flex gap-4">
@@ -186,13 +186,13 @@
                     <thead class="text-orange-500 border-b border-orange-900 sticky top-0 bg-[#1a0f0a]">
                         <tr>
                             <th class="pb-2 pl-2">Time</th>
-                            <th class="pb-2">ID</th>
                             <th class="pb-2">Result</th>
-                            <th class="pb-2 text-right">Open</th>
-                            <th class="pb-2 text-right">Close</th>
                             <th class="pb-2 text-right">Vol</th>
-                            <th class="pb-2 text-right">Winners</th>
+                            <th class="pb-2 text-right">Fee</th>
+                            <th class="pb-2 text-right">Upkeep</th>
+                            <th class="pb-2 text-right">Users</th>
                             <th class="pb-2 text-right">Payout</th>
+                            <th class="pb-2 text-right">Vault Δ</th>
                         </tr>
                     </thead>
                     <tbody id="full-history-rows" class="text-orange-200/80 divide-y divide-orange-900/20">
@@ -215,7 +215,7 @@
     let fullHistory = [];
     let cachedAdminPassword = null;
     let isLogAutoScroll = true;
-    let allFramesData = []; // For modal
+    let allFramesData = [];
 
     const ui = {
         statusDot: document.getElementById('status-dot'),
@@ -344,7 +344,7 @@
         } catch (e) { console.log("Payout fetch error", e); }
     }
 
-    // NEW: FULL HISTORY
+    // NEW: FULL HISTORY (UPDATED V1.7)
     async function openFullHistory() {
         const pwd = getPassword();
         if (!pwd) return;
@@ -367,16 +367,26 @@
             if (f.result === 'DOWN') resColor = 'text-red-400 font-bold';
             if (f.result === 'CANCELLED') resColor = 'text-red-600 font-bold';
 
+            // Vault Delta Calculation
+            const vStart = f.vStart || 0;
+            const vEnd = f.vEnd || 0;
+            const vDiff = vEnd - vStart;
+            const vDiffSign = vDiff >= 0 ? '+' : '';
+            const vDiffColor = vDiff >= 0 ? 'text-green-400' : 'text-red-400';
+
             return `
                 <tr class="hover:bg-white/5 border-b border-orange-900/20">
                     <td class="py-2 pl-2 whitespace-nowrap">${time}</td>
-                    <td class="py-2 text-xs text-gray-500">${f.id}</td>
                     <td class="py-2 ${resColor}">${f.result}</td>
-                    <td class="py-2 text-right">$${(f.open||0).toFixed(2)}</td>
-                    <td class="py-2 text-right">$${(f.close||0).toFixed(2)}</td>
                     <td class="py-2 text-right font-bold text-white">${(f.totalSol||0).toFixed(2)}</td>
-                    <td class="py-2 text-right">${f.winners||0}</td>
-                    <td class="py-2 text-right text-green-400">${(f.payout||0).toFixed(2)}</td>
+                    <td class="py-2 text-right text-red-400">${(f.fee||0).toFixed(3)}</td>
+                    <td class="py-2 text-right text-orange-300">${(f.upkeep||0).toFixed(3)}</td>
+                    <td class="py-2 text-right text-blue-300">${f.users||0}</td>
+                    <td class="py-2 text-right text-green-400 font-bold">${(f.payout||0).toFixed(2)}</td>
+                    <td class="py-2 text-right text-xs">
+                        <div class="${vDiffColor}">${vDiffSign}${vDiff.toFixed(2)}</div>
+                        <div class="text-gray-600">${vStart.toFixed(1)} -> ${vEnd.toFixed(1)}</div>
+                    </td>
                 </tr>
             `;
         }).join('');
@@ -426,8 +436,8 @@
             }
 
             if (data.market) {
-                ui.upPrice.innerText = data.market.priceUp.toFixed(4);
-                ui.downPrice.innerText = data.market.priceDown.toFixed(4);
+                ui.upPrice.innerText = data.market.priceUp.toFixed(4) + " SOL";
+                ui.downPrice.innerText = data.market.priceDown.toFixed(4) + " SOL";
                 const netUp = Math.max(0, data.market.sharesUp - 50);
                 const netDown = Math.max(0, data.market.sharesDown - 50);
                 ui.upShares.innerText = Math.round(netUp).toLocaleString();
