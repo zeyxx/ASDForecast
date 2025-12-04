@@ -2,11 +2,11 @@ const express = require('express');
 const cors = require('cors');
 const { Connection, PublicKey, Keypair, Transaction, SystemProgram, sendAndConfirmTransaction, ComputeBudgetProgram } = require('@solana/web3.js');
 const axios = require('axios');
-const { Mutex } = require('async-mutex');
-const rateLimit = require('express-rate-limit'); 
 const fs = require('fs').promises; 
 const fsSync = require('fs');      
 const path = require('path');
+const { Mutex } = require('async-mutex');
+const rateLimit = require('express-rate-limit'); 
 
 const app = express();
 const stateMutex = new Mutex();
@@ -32,7 +32,7 @@ const PAYOUT_MULTIPLIER = 0.94;
 const FEE_PERCENT = 0.0552; 
 const UPKEEP_PERCENT = 0.0048; 
 const FRAME_DURATION = 15 * 60 * 1000; 
-const BACKEND_VERSION = "140.0"; // UPDATE: Hourly Sentiment Feature
+const BACKEND_VERSION = "140.1"; // UPDATE: Fixed Syntax Error in closeFrame
 const PRIORITY_FEE_UNITS = 50000; 
 
 // --- LOGGING ---
@@ -55,13 +55,7 @@ function isValidSignature(signature) { return typeof signature === 'string' && S
 // --- RATE LIMIT ---
 const betLimiter = rateLimit({ windowMs: 1 * 60 * 1000, max: 10, message: { error: "RATE_LIMIT_EXCEEDED" }, standardHeaders: true, legacyHeaders: false });
 const stateLimiter = rateLimit({ windowMs: 1 * 60 * 1000, max: 120, message: { error: "POLLING_LIMIT_EXCEEDED" }, standardHeaders: true, legacyHeaders: false });
-const voteLimiter = rateLimit({ 
-    windowMs: 15 * 1000, 
-    max: 1, 
-    message: { error: "COOLDOWN_ACTIVE" }, 
-    standardHeaders: true, 
-    legacyHeaders: false 
-});
+const voteLimiter = rateLimit({ windowMs: 15 * 1000, max: 1, message: { error: "COOLDOWN_ACTIVE" }, standardHeaders: true, legacyHeaders: false });
 
 // --- PERSISTENCE ---
 const RENDER_DISK_PATH = '/var/data';
@@ -92,7 +86,7 @@ async function atomicWrite(filePath, data) {
 
 // --- IMAGES ---
 let cachedShareImage = null, cachedItsFineImage = null, cachedItsOverImage = null;
-let cachedSentUpImage = null, cachedSentDownImage = null; // NEW SENTIMENT
+let cachedSentUpImage = null, cachedSentDownImage = null;
 let isInitialized = false; 
 
 async function cacheImage(url) {
@@ -142,14 +136,12 @@ let currentQueueLength = 0;
 let payoutHistory = [];
 let cachedPublicState = null;
 
-
 function getNextHourTimestamp() {
     const now = new Date();
     now.setHours(now.getHours() + 1, 0, 0, 0);
     return now.getTime();
 }
 
-// --- UTILITY FUNCTION ---
 function getCurrentWindowStart() {
     const now = new Date();
     const minutes = Math.floor(now.getMinutes() / 15) * 15;
@@ -158,14 +150,14 @@ function getCurrentWindowStart() {
     return start.getTime();
 }
 
-
 async function loadAndInit() {
     await initImages(); 
     await loadGlobalState(); 
     await updatePrice(); 
+    
+    isInitialized = true; // Set TRUE before caching so cache isn't empty
     updatePublicStateCache(); 
 
-    isInitialized = true;
     log(`> [SYS] Backend Initialization Complete.`, "SYS");
 }
 
@@ -187,15 +179,16 @@ function loadGlobalState() {
         
         if (fsSync.existsSync(STATE_FILE)) {
             const savedState = JSON.parse(fsSync.readFileSync(STATE_FILE));
-            gameState = { ...savedState, 
-                // Ensure flags and critical components are reset/initialized safely
-                isResetting: false,
-                broadcast: savedState.broadcast || { message: "", isActive: false },
-                vaultStartBalance: savedState.vaultStartBalance || 0,
-                hourlySentiment: savedState.hourlySentiment || { up: 0, down: 0, nextReset: getNextHourTimestamp() }
-            };
+            gameState = { ...gameState, ...savedState };
+            gameState.isResetting = false; 
+            if (!gameState.broadcast) gameState.broadcast = { message: "", isActive: false };
+            if (!gameState.vaultStartBalance) gameState.vaultStartBalance = 0; 
             
-            // Re-load bets for current frame
+            // Re-init sentiment if missing from file
+            if (!gameState.hourlySentiment || !gameState.hourlySentiment.nextReset) {
+                gameState.hourlySentiment = { up: 0, down: 0, nextReset: getNextHourTimestamp() };
+            }
+            
             if (gameState.candleStartTime > 0) {
                 const currentFrameFile = path.join(FRAMES_DIR, `frame_${gameState.candleStartTime}.json`);
                 if (fsSync.existsSync(currentFrameFile)) {
@@ -204,7 +197,6 @@ function loadGlobalState() {
                 }
             }
         } else {
-            // Initial run setup
             gameState.hourlySentiment = { up: 0, down: 0, nextReset: getNextHourTimestamp() };
         }
         
@@ -219,9 +211,6 @@ function loadGlobalState() {
         let recalculatedWinnings = 0;
         if (historySummary.length > 0) recalculatedWinnings = historySummary.reduce((sum, frame) => sum + (frame.payout || 0), 0);
         globalStats.totalWinnings = recalculatedWinnings;
-        
-        log(`> [SYS] State Loaded.`);
-
     } catch (e) { log(`> [ERR] Load Error: ${e}`, "ERR"); }
 }
 
@@ -315,9 +304,7 @@ async function processPayoutQueue() {
         while (queueData.length > 0) {
             const batch = queueData[0];
             if (typeof batch.retries === 'undefined') batch.retries = 0;
-
             const { type, recipients, frameId } = batch;
-            
             try {
                 const tx = new Transaction();
                 const priorityFeeIx = ComputeBudgetProgram.setComputeUnitPrice({ microLamports: PRIORITY_FEE_UNITS });
@@ -381,25 +368,22 @@ async function processPayoutQueue() {
     } catch (e) { log(`> [QUEUE] Error: ${e}`, "ERR"); }
     finally { release(); isProcessingQueue = false; }
 }
-
+let isProcessingQueue = false; 
 setInterval(processPayoutQueue, 20000);
 
 async function queuePayouts(frameId, result, bets, totalVolume) {
     log(`> [PAYOUT] Queuing payouts for Frame ${frameId}. Result: ${result}, Vol: ${totalVolume}`, "PAYOUT");
     if (totalVolume === 0) return;
     const queue = []; 
-
     if (result === "FLAT") {
         const burnLamports = Math.floor((totalVolume * 0.99) * 1e9);
         if (burnLamports > 0) queue.push({ type: 'FEE', recipients: [{ pubKey: FEE_WALLET.toString(), amount: burnLamports }], retries: 0 });
     } else {
         const feeLamports = Math.floor((totalVolume * FEE_PERCENT) * 1e9); 
         const upkeepLamports = Math.floor((totalVolume * UPKEEP_PERCENT) * 1e9); 
-        
         if (feeLamports > 0) queue.push({ type: 'FEE', recipients: [{ pubKey: FEE_WALLET.toString(), amount: feeLamports }], retries: 0 });
         if (upkeepLamports > 0) queue.push({ type: 'FEE', recipients: [{ pubKey: UPKEEP_WALLET.toString(), amount: upkeepLamports }], retries: 0 });
     }
-
     if (result !== "FLAT") {
         const potLamports = Math.floor((totalVolume * 0.94) * 1e9);
         const userPositions = {};
@@ -408,10 +392,8 @@ async function queuePayouts(frameId, result, bets, totalVolume) {
             if (bet.direction === 'UP') userPositions[bet.user].up += bet.shares;
             else userPositions[bet.user].down += bet.shares;
         });
-
         let totalWinningShares = 0;
         const eligibleWinners = [];
-
         for (const [pubKey, pos] of Object.entries(userPositions)) {
             const rUp = Math.round(pos.up * 10000) / 10000;
             const rDown = Math.round(pos.down * 10000) / 10000;
@@ -419,14 +401,12 @@ async function queuePayouts(frameId, result, bets, totalVolume) {
             if (rUp > rDown) userDir = "UP";
             else if (rDown > rUp) userDir = "DOWN";
             if (pos.up === pos.down) userDir = "FLAT"; 
-
             if (userDir === result) {
                 const sharesHeld = result === "UP" ? pos.up : pos.down;
                 totalWinningShares += sharesHeld;
                 eligibleWinners.push({ pubKey, sharesHeld });
             }
         }
-
         if (totalWinningShares > 0) {
             const BATCH_SIZE = 12; 
             for (let i = 0; i < eligibleWinners.length; i += BATCH_SIZE) {
@@ -441,7 +421,6 @@ async function queuePayouts(frameId, result, bets, totalVolume) {
             }
         }
     }
-
     const release = await payoutMutex.acquire();
     try {
         let existingQueue = [];
@@ -450,7 +429,6 @@ async function queuePayouts(frameId, result, bets, totalVolume) {
         await atomicWrite(QUEUE_FILE, newQueue);
         currentQueueLength = newQueue.length;
     } finally { release(); }
-    
     processPayoutQueue();
 }
 
@@ -473,7 +451,6 @@ async function processRefunds(frameId, bets) {
         const batch = recipients.slice(i, i + BATCH_SIZE);
         queue.push({ type: 'USER_REFUND', frameId: frameId, recipients: batch, retries: 0 }); 
     }
-
     const release = await payoutMutex.acquire();
     try {
         let existingQueue = [];
@@ -482,7 +459,6 @@ async function processRefunds(frameId, bets) {
         await atomicWrite(QUEUE_FILE, newQueue);
         currentQueueLength = newQueue.length;
     } finally { release(); }
-    
     processPayoutQueue();
 }
 
@@ -515,6 +491,7 @@ async function closeFrame(closePrice, closeTime) {
                 const connection = new Connection(SOLANA_NETWORK);
                 vaultEndBalance = (await connection.getBalance(houseKeypair.publicKey)) / 1e9;
              } catch(e) { log(`> [ERR] Failed to fetch vault close balance: ${e.message}`, "WARN"); }
+        } // <--- FIXED: Added missing brace here
 
         await updateASDFPurchases();
 
@@ -523,32 +500,46 @@ async function closeFrame(closePrice, closeTime) {
         if (closePrice > openPrice) result = "UP";
         else if (closePrice < openPrice) result = "DOWN";
 
+        const realSharesUp = Math.max(0, gameState.poolShares.up - 50);
+        const realSharesDown = Math.max(0, gameState.poolShares.down - 50);
         const frameSol = gameState.bets.reduce((acc, bet) => acc + bet.costSol, 0);
-        let feeAmt = (result === "FLAT") ? frameSol * 0.99 : frameSol * FEE_PERCENT;
-        let upkeepAmt = (result !== "FLAT") ? frameSol * UPKEEP_PERCENT : 0;
-        globalStats.totalFees += feeAmt;
+
+        let frameFees = (result === "FLAT") ? frameSol * 0.99 : frameSol * FEE_PERCENT;
+        globalStats.totalFees += frameFees;
 
         let winnerCount = 0;
         let payoutTotal = 0;
         if (result !== "FLAT") {
             const potSol = frameSol * 0.94;
             const userPositions = {};
-            gameState.bets.forEach(bet => { if (!userPositions[bet.user]) userPositions[bet.user] = { up: 0, down: 0 }; if (bet.direction === 'UP') userPositions[bet.user].up += bet.shares; else userPositions[bet.user].down += bet.shares; });
+            gameState.bets.forEach(bet => {
+                if (!userPositions[bet.user]) userPositions[bet.user] = { up: 0, down: 0 };
+                if (bet.direction === 'UP') userPositions[bet.user].up += bet.shares;
+                else userPositions[bet.user].down += bet.shares;
+            });
             for (const [pk, pos] of Object.entries(userPositions)) {
-                const rUp = Math.round(pos.up * 10000) / 10000; const rDown = Math.round(pos.down * 10000) / 10000;
-                let userDir = "FLAT"; if (rUp > rDown) userDir = "UP"; else if (rDown > rUp) userDir = "DOWN"; if (rUp === rDown) userDir = "FLAT";
-                if (userDir === result) winnerCount++;
+                const rUp = Math.round(pos.up * 10000) / 10000;
+                const rDown = Math.round(pos.down * 10000) / 10000;
+                let dir = "FLAT";
+                if (rUp > rDown) dir = "UP";
+                else if (rDown > rUp) dir = "DOWN";
+                if (rUp === rDown) dir = "FLAT";
+                if (dir === result) winnerCount++;
             }
-            if (winnerCount > 0) { payoutTotal = potSol; globalStats.totalWinnings += payoutTotal; }
+            if (winnerCount > 0) {
+                payoutTotal = potSol;
+                globalStats.totalWinnings += payoutTotal; 
+            }
         }
 
-        const uniqueUsers = new Set(gameState.bets.map(b => b.user)).size;
-        
         const frameRecord = {
-            id: frameId, startTime: frameId, endTime: frameId + FRAME_DURATION, time: new Date(frameId).toISOString(), open: openPrice, close: closePrice,
-            result: result, totalSol: frameSol, winners: winnerCount, payout: payoutTotal,
+            id: frameId, startTime: frameId, endTime: frameId + FRAME_DURATION,
+            time: new Date(frameId).toISOString(), open: openPrice, close: closePrice,
+            result: result, sharesUp: realSharesUp, sharesDown: realSharesDown,
+            totalSol: frameSol, winners: winnerCount, payout: payoutTotal,
             fee: feeAmt, upkeep: upkeepAmt, users: uniqueUsers, vStart: gameState.vaultStartBalance, vEnd: vaultEndBalance
         };
+        
         historySummary.unshift(frameRecord);
         if (historySummary.length > 100) historySummary = historySummary.slice(0, 100);
         await atomicWrite(HISTORY_FILE, historySummary);
@@ -559,18 +550,32 @@ async function closeFrame(closePrice, closeTime) {
         for (let i = 0; i < usersToUpdate.length; i += USER_IO_BATCH_SIZE) {
             const batch = usersToUpdate.slice(i, i + USER_IO_BATCH_SIZE);
             await Promise.all(batch.map(async ([pubKey, pos]) => {
-                const userData = await getUser(pubKey); userData.framesPlayed += 1;
-                const rUp = Math.round(pos.up * 10000) / 10000; const rDown = Math.round(pos.down * 10000) / 10000;
-                let userDir = "FLAT"; if (rUp > rDown) userDir = "UP"; else if (rDown > rUp) userDir = "DOWN"; if (rUp === rDown) userDir = "FLAT";
+                const userData = await getUser(pubKey);
+                userData.framesPlayed += 1;
+                
+                const rUp = Math.round(pos.up * 10000) / 10000;
+                const rDown = Math.round(pos.down * 10000) / 10000;
+
+                let userDir = "FLAT";
+                if (rUp > rDown) userDir = "UP";
+                else if (rDown > rUp) userDir = "DOWN";
+                if (rUp === rDown) userDir = "FLAT";
+
                 const outcome = (userDir !== "FLAT" && result !== "FLAT" && userDir === result) ? "WIN" : "LOSS";
                 if (outcome === "WIN") userData.wins += 1; else if (outcome === "LOSS") userData.losses += 1;
                 if (!userData.frameLog) userData.frameLog = {};
-                userData.frameLog[frameId] = { dir: userDir, result: outcome, time: Date.now(), upShares: pos.up, downShares: pos.down, wagered: pos.sol };
+                userData.frameLog[frameId] = { 
+                    dir: userDir, result: outcome, time: Date.now(),
+                    upShares: pos.up, downShares: pos.down, wagered: pos.sol
+                };
                 await saveUser(pubKey, userData);
             }));
         }
 
-        processedSignatures.clear(); await fs.writeFile(SIGS_FILE, '');
+        processedSignatures.clear();
+        await fs.writeFile(SIGS_FILE, '');
+
+        updatePublicStateCache();
         
         gameState.candleStartTime = closeTime;
         gameState.candleOpen = closePrice;
@@ -581,7 +586,6 @@ async function closeFrame(closePrice, closeTime) {
         gameState.vaultStartBalance = vaultEndBalance; 
 
         await saveSystemState();
-        updatePublicStateCache();
         await queuePayouts(frameId, result, betsSnapshot, frameSol); 
     } catch(e) {
         log(`> [ERR] CloseFrame Failed: ${e.message}`, "ERR");
@@ -620,7 +624,6 @@ async function updatePrice() {
             gameState.lastPriceTimestamp = Date.now();
             const currentWindowStart = getCurrentWindowStart();
 
-            // HOURLY SENTIMENT RESET LOGIC
             if (Date.now() >= gameState.hourlySentiment.nextReset) {
                 log("> [SENTIMENT] Hourly reset triggered.");
                 gameState.hourlySentiment.up = 0;
@@ -657,29 +660,48 @@ async function updatePrice() {
                     log("> [SYS] Unpausing for new Frame.");
                     if (!gameState.isCancelled) {
                          const skippedFrameRecord = {
-                            id: gameState.candleStartTime, startTime: gameState.candleStartTime, endTime: gameState.candleStartTime + FRAME_DURATION, time: new Date(gameState.candleStartTime).toISOString(),
-                            open: gameState.candleOpen, close: fetchedPrice, result: "PAUSED", sharesUp: 0, sharesDown: 0, totalSol: 0, winners: 0, payout: 0
+                            id: gameState.candleStartTime,
+                            startTime: gameState.candleStartTime,
+                            endTime: gameState.candleStartTime + FRAME_DURATION,
+                            time: new Date(gameState.candleStartTime).toISOString(),
+                            open: gameState.candleOpen,
+                            close: fetchedPrice,
+                            result: "PAUSED", 
+                            sharesUp: 0, sharesDown: 0, totalSol: 0, winners: 0, payout: 0
                         };
                         historySummary.unshift(skippedFrameRecord);
-                        if(historySummary.length > 100) historySummary = historySummary.slice(0,100); await atomicWrite(HISTORY_FILE, historySummary);
+                        if(historySummary.length > 100) historySummary = historySummary.slice(0,100);
+                        await atomicWrite(HISTORY_FILE, historySummary);
                         gameState.isPaused = false; 
-                    } else { gameState.isCancelled = false; gameState.isPaused = false; }
-                    gameState.candleStartTime = currentWindowStart; gameState.candleOpen = fetchedPrice; await saveSystemState();
+                    } else {
+                        gameState.isCancelled = false;
+                        gameState.isPaused = false;
+                    }
+                    gameState.candleStartTime = currentWindowStart;
+                    gameState.candleOpen = fetchedPrice;
+                    await saveSystemState();
                 }
                 return;
             }
             if (currentWindowStart > gameState.candleStartTime) {
                 if (gameState.candleStartTime === 0) {
-                    gameState.candleStartTime = currentWindowStart; gameState.candleOpen = fetchedPrice; await saveSystemState();
+                    gameState.candleStartTime = currentWindowStart;
+                    gameState.candleOpen = fetchedPrice;
+                    await saveSystemState();
                 } else {
-                    log(`> [SYS] Closing Frame: ${gameState.candleStartTime} @ $${fetchedPrice}`); gameState.isResetting = true; await saveSystemState();
+                    log(`> [SYS] Closing Frame: ${gameState.candleStartTime} @ $${fetchedPrice}`);
+                    gameState.isResetting = true; 
+                    await saveSystemState();
                     await closeFrame(fetchedPrice, currentWindowStart);
                 }
             }
             const totalS = gameState.poolShares.up + gameState.poolShares.down;
-            const pUp = (gameState.poolShares.up / totalS) * PRICE_SCALE; const pDown = (gameState.poolShares.down / totalS) * PRICE_SCALE;
-            if (!gameState.sharePriceHistory) gameState.sharePriceHistory = []; gameState.sharePriceHistory.push({ t: Date.now(), up: pUp, down: pDown });
-            const FIVE_MINS = 5 * 60 * 1000; gameState.sharePriceHistory = gameState.sharePriceHistory.filter(x => x.t > Date.now() - FIVE_MINS);
+            const pUp = (gameState.poolShares.up / totalS) * PRICE_SCALE;
+            const pDown = (gameState.poolShares.down / totalS) * PRICE_SCALE;
+            if (!gameState.sharePriceHistory) gameState.sharePriceHistory = [];
+            gameState.sharePriceHistory.push({ t: Date.now(), up: pUp, down: pDown });
+            const FIVE_MINS = 5 * 60 * 1000;
+            gameState.sharePriceHistory = gameState.sharePriceHistory.filter(x => x.t > Date.now() - FIVE_MINS);
             await saveSystemState();
         });
     }
@@ -714,13 +736,28 @@ function updatePublicStateCache() {
     const lastFramePot = historySummary.length > 0 ? historySummary[0].totalSol : 0;
 
     cachedPublicState = {
-        price: gameState.price, openPrice: gameState.candleOpen, candleStartTime: gameState.candleStartTime, candleEndTime: gameState.candleStartTime + FRAME_DURATION,
-        change: percentChange, currentVolume: currentVolume, uniqueUsers: uniqueUsers, platformStats: globalStats, isPaused: gameState.isPaused, 
-        isResetting: gameState.isResetting, isCancelled: gameState.isCancelled, broadcast: gameState.broadcast,
+        price: gameState.price,
+        openPrice: gameState.candleOpen,
+        candleStartTime: gameState.candleStartTime,
+        candleEndTime: gameState.candleStartTime + FRAME_DURATION,
+        change: percentChange,
+        currentVolume: currentVolume,
+        uniqueUsers: uniqueUsers,
+        platformStats: globalStats,
+        isPaused: gameState.isPaused,
+        isResetting: gameState.isResetting,
+        isCancelled: gameState.isCancelled,
+        broadcast: gameState.broadcast,
         market: { priceUp, priceDown, sharesUp: gameState.poolShares.up, sharesDown: gameState.poolShares.down, changes },
-        history: historySummary, recentTrades: gameState.recentTrades, leaderboard: globalLeaderboard,
-        lastPriceTimestamp: gameState.lastPriceTimestamp, backendVersion: BACKEND_VERSION, payoutQueueLength: currentQueueLength,
-        lastFramePot: lastFramePot, totalLifetimeUsers: globalStats.totalLifetimeUsers, totalWinnings: globalStats.totalWinnings,
+        history: historySummary,
+        recentTrades: gameState.recentTrades,
+        leaderboard: globalLeaderboard,
+        lastPriceTimestamp: gameState.lastPriceTimestamp,
+        backendVersion: BACKEND_VERSION,
+        payoutQueueLength: currentQueueLength,
+        lastFramePot: lastFramePot,
+        totalLifetimeUsers: globalStats.totalLifetimeUsers,
+        totalWinnings: globalStats.totalWinnings,
         hourlySentiment: gameState.hourlySentiment
     };
 }
@@ -740,38 +777,54 @@ app.get('/api/state', stateLimiter, async (req, res) => {
         response.userStats = myStats;
         const userBets = gameState.bets.filter(b => b.user === userKey);
         response.activePosition = {
-            upShares: userBets.filter(b => b.direction === 'UP').reduce((a, b) => a + b.shares, 0), downShares: userBets.filter(b => b.direction === 'DOWN').reduce((a, b) => a + b.shares, 0),
-            upSol: userBets.filter(b => b.direction === 'UP').reduce((a, b) => a + b.costSol, 0), downSol: userBets.filter(b => b.direction === 'DOWN').reduce((a, b) => a + b.costSol, 0),
+            upShares: userBets.filter(b => b.direction === 'UP').reduce((a, b) => a + b.shares, 0),
+            downShares: userBets.filter(b => b.direction === 'DOWN').reduce((a, b) => a + b.shares, 0),
+            upSol: userBets.filter(b => b.direction === 'UP').reduce((a, b) => a + b.costSol, 0),
+            downSol: userBets.filter(b => b.direction === 'DOWN').reduce((a, b) => a + b.costSol, 0),
             wageredSol: userBets.reduce((a, b) => a + b.costSol, 0)
         };
     }
     res.json(response);
 });
 
-// IMAGE ENDPOINTS - Serve cached data
 app.get('/api/image/fine', (req, res) => { res.json({ image: cachedItsFineImage }); });
 app.get('/api/image/over', (req, res) => { res.json({ image: cachedItsOverImage }); });
-app.get('/api/image/share-image', (req, res) => { res.json({ image: cachedShareImage }); });
+app.get('/api/share-image', (req, res) => { res.json({ image: cachedShareImage }); });
 app.get('/api/image/sentiment-up', (req, res) => { res.json({ image: cachedSentUpImage }); });
 app.get('/api/image/sentiment-down', (req, res) => { res.json({ image: cachedSentDownImage }); });
 
-// NEW VOTE ENDPOINT
 app.post('/api/sentiment/vote', voteLimiter, async (req, res) => {
     const { direction } = req.body;
     if (!['UP', 'DOWN'].includes(direction)) return res.status(400).json({ error: "Invalid Direction" });
-
     const release = await stateMutex.acquire();
     try {
         if (direction === 'UP') gameState.hourlySentiment.up++;
         else gameState.hourlySentiment.down++;
-        
         await saveSystemState();
         updatePublicStateCache(); 
         log(`> [SENTIMENT] Received vote: ${direction}`, "SENT");
         res.json({ success: true, sentiment: gameState.hourlySentiment });
-    } finally {
-        release();
-    }
+    } finally { release(); }
+});
+
+app.get('/api/admin/logs', (req, res) => {
+    const auth = req.headers['x-admin-secret'];
+    if (!auth || auth !== process.env.ADMIN_ACTION_PASSWORD) return res.status(403).json({ error: "UNAUTHORIZED" });
+    res.json({ logs: serverLogs });
+});
+
+app.get('/api/admin/payouts', async (req, res) => {
+    const auth = req.headers['x-admin-secret'];
+    if (!auth || auth !== process.env.ADMIN_ACTION_PASSWORD) return res.status(403).json({ error: "UNAUTHORIZED" });
+    let currentQueue = [];
+    if (fsSync.existsSync(QUEUE_FILE)) { try { currentQueue = JSON.parse(fsSync.readFileSync(QUEUE_FILE, 'utf8')); } catch(e) {} }
+    res.json({ queue: currentQueue, history: payoutHistory });
+});
+
+app.get('/api/admin/full-history', async (req, res) => {
+    const auth = req.headers['x-admin-secret'];
+    if (!auth || auth !== process.env.ADMIN_ACTION_PASSWORD) return res.status(403).json({ error: "UNAUTHORIZED" });
+    res.json({ history: historySummary });
 });
 
 app.post('/api/verify-bet', betLimiter, async (req, res) => {
