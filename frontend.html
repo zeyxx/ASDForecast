@@ -139,7 +139,7 @@
                 </div>
 
                 <div class="panel p-6 bg-black/20 relative">
-                    <h3 id="net-shares-header" class="text-lg font-bold text-white mb-4">Net Shares Bought</h3>
+                    <h3 id="net-shares-header" class="text-lg font-bold text-white mb-4 text-center">Share Market</h3>
                     <div class="flex justify-between text-sm font-bold font-mono text-white mb-1">
                         <span class="text-green-400">UP: <span id="lbl-shares-up">0</span></span>
                         <span class="text-red-400">DOWN: <span id="lbl-shares-down">0</span></span>
@@ -307,7 +307,7 @@
                 <div class="mt-6 border-t-2 border-red-900/50 pt-4 bg-red-900/10 p-4 rounded"><strong class="text-red-500 block mb-1 text-lg">⚠️ DISCLAIMER & RISK WARNING</strong><p class="text-xs text-orange-200 leading-relaxed">This platform is currently LIVE on Solana Mainnet. The operators are not responsible for lost funds, smart contract errors, oracle latency, or network failures. <br><br><strong>PREDICT RESPONSIBLY:</strong> Never wager funds you cannot afford to lose. This is an experimental technology demonstration.</p></div>
             </div>
         </div>
-        <div class="text-center text-xs text-gray-500 font-mono pt-2 border-t border-orange-900/50"><span class="text-orange-400">Frontend v126.3</span> | Backend <span id="backend-version">v---</span></div>
+        <div class="text-center text-xs text-gray-500 font-mono pt-2 border-t border-orange-900/50"><span class="text-orange-400">Frontend v126.5</span> | Backend <span id="backend-version">v---</span></div>
     </div>
 
     <div id="share-modal" class="fixed inset-0 z-50 hidden flex items-center justify-center bg-black/60">
@@ -367,7 +367,8 @@
     let PublicKey, SystemProgram, Transaction;
     let state = { pubKey: null, prices: { up: 0.05, down: 0.05 }, conn: null, fullHistory: [], lastFrameId: null, userLog: {}, isHistoryExpanded: false, isAboutExpanded: false, isOnline: false, targetEndTime: null, isResetting: false, isCancelled: false, baseImageSrc: null, images: { fine: null, over: null, sentUp: null, sentDown: null }, solBalance: 0 };
     let ui = {};
-    let pollTimeout = null; // Store timeout ID for cleanup
+    let pollTimeout = null; // Store market data timeout ID for cleanup
+    let balanceIntervalId = null; // NEW: Store balance interval ID
 
     window.addEventListener('load', () => {
         if (window.solanaWeb3) {
@@ -464,8 +465,10 @@
         document.addEventListener("visibilitychange", () => {
             if (document.hidden) {
                 if (pollTimeout) { clearTimeout(pollTimeout); pollTimeout = null; }
+                if (balanceIntervalId) { clearInterval(balanceIntervalId); balanceIntervalId = null; } // NEW: Stop balance check
             } else {
                 poll(); // Immediate update on wake
+                if (state.pubKey && !balanceIntervalId) startBalancePolling(); // NEW: Restart balance check if connected
             }
         });
 
@@ -475,6 +478,23 @@
         setTimeout(() => { if(window.solana?.isPhantom) window.solana.connect({onlyIfTrusted:true}).then(onConnect).catch(()=>{}); }, 500);
     });
     
+    // NEW: Function to start periodic balance checks
+    function startBalancePolling() {
+        if (!state.pubKey) return;
+        if (balanceIntervalId) clearInterval(balanceIntervalId);
+        // Start polling immediately and then every 20 seconds
+        refreshBalance(); 
+        balanceIntervalId = setInterval(refreshBalance, 20000); 
+    }
+
+    // NEW: Function to stop periodic balance checks
+    function stopBalancePolling() {
+        if (balanceIntervalId) {
+            clearInterval(balanceIntervalId);
+            balanceIntervalId = null;
+        }
+    }
+
     // NEW: Sentiment Vote Logic with PubKey Validation
     window.voteSentiment = async function(dir) {
         if (!state.pubKey) {
@@ -582,6 +602,7 @@
     async function connect() { try { await window.solana.connect(); onConnect(await window.solana.connect()); } catch(e){} }
     async function disconnectWallet() { 
         if(window.solana) await window.solana.disconnect(); 
+        stopBalancePolling(); // NEW: Stop polling when disconnecting
         state.pubKey = null; 
         state.solBalance = 0; // RESET BALANCE
         state.userLog = {}; 
@@ -598,17 +619,23 @@
         ui.connect.innerText = `👤 ${resp.publicKey.toString().slice(0,4)}...`; 
         ui.form.classList.remove('opacity-50', 'pointer-events-none'); 
         ui.disconnect.classList.remove('hidden'); 
-        refreshBalance(); 
+        startBalancePolling(); // NEW: Start periodic balance check
         poll(); 
     }
 
     // UPDATED: Now stores balance in state.solBalance and calls updateCosts
     async function refreshBalance() { 
         if(state.pubKey) { 
-            const bal = await state.conn.getBalance(state.pubKey); 
-            state.solBalance = bal / 1e9; // Store balance in SOL
-            ui.bal.innerText = state.solBalance.toFixed(4); 
-            updateCosts(); // Call updateCosts after updating balance
+            try {
+                const bal = await state.conn.getBalance(state.pubKey); 
+                state.solBalance = bal / 1e9; // Store balance in SOL
+                ui.bal.innerText = state.solBalance.toFixed(4); 
+                updateCosts(); // Call updateCosts after updating balance
+            } catch (e) {
+                console.error("Failed to refresh balance:", e);
+                // If fetching balance fails, don't update state.solBalance, but still update costs
+                updateCosts();
+            }
         } 
     }
     
@@ -635,20 +662,26 @@
             ui.costDown.innerText = costDown.toFixed(3) + " SOL"; 
             
             // Logic to disable input/buttons based on market state
-            const isMarketOpen = !(state.pubKey && !state.isResetting && !state.isCancelled && !state.isPaused && !(state.targetEndTime && state.targetEndTime <= Date.now() + 500));
+            // isMarketOpen is true if any blocking state is active, OR if the user is not connected
+            const isMarketBlocking = state.isResetting || state.isCancelled || state.isPaused || (state.targetEndTime && state.targetEndTime <= Date.now() + 500);
+            const isConnected = !!state.pubKey;
+            
+            const isMarketOpen = !(isConnected && !isMarketBlocking);
+
 
             // Disable/Enable Quantity Controls (qty input and + / - buttons)
-            ui.qty.disabled = isMarketOpen;
-            ui.btnInc.disabled = isMarketOpen;
-            ui.btnDec.disabled = isMarketOpen;
+            // The quantity controls should be disabled if the market is blocking OR if the user is disconnected
+            ui.qty.disabled = isMarketBlocking || !isConnected;
+            ui.btnInc.disabled = isMarketBlocking || !isConnected;
+            ui.btnDec.disabled = isMarketBlocking || !isConnected;
 
             // Balance Validation
             const hasUpFunds = costUp <= state.solBalance;
             const hasDownFunds = costDown <= state.solBalance;
             
-            // Disable Buy Buttons: combines Market State AND Insufficient Funds
-            ui.btnUp.disabled = isMarketOpen || !hasUpFunds;
-            ui.btnDown.disabled = isMarketOpen || !hasDownFunds;
+            // Disable Buy Buttons: combines Market State AND Insufficient Funds AND Disconnected State
+            ui.btnUp.disabled = isMarketBlocking || !hasUpFunds || !isConnected;
+            ui.btnDown.disabled = isMarketBlocking || !hasDownFunds || !isConnected;
 
             // Visual feedback for insufficient funds
             if (!hasUpFunds) { ui.costUp.classList.add('text-red-500'); ui.costUp.classList.remove('text-green-300'); }
@@ -813,7 +846,7 @@
                      if(ui.pauseText) { ui.pauseText.innerText = "CALCULATING RESULTS..."; ui.pauseText.className = "text-blue-400 font-bold text-xl"; }
                 } else {
                      // OPEN
-                     ui.netSharesHeader.innerText = "Net Shares Bought"; ui.netSharesHeader.classList.remove("text-red-500", "text-blue-400", "animate-pulse");
+                     ui.netSharesHeader.innerText = "Share Market"; ui.netSharesHeader.classList.remove("text-red-500", "text-blue-400", "animate-pulse");
                      // Re-enable buy buttons and hide overlay
                      ui.pauseOverlay.classList.add('hidden');
                 }
