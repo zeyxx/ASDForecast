@@ -1,3 +1,4 @@
+require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const crypto = require('crypto');
@@ -42,9 +43,12 @@ const LOTTERY_CONFIG = {
     MAX_TICKETS: 52,                      // Max tickets per holder
     DRAW_INTERVAL_MS: 7 * 24 * 60 * 60 * 1000, // 7 days
     ACTIVITY_WINDOW_DAYS: 7,              // Days of activity required for full eligibility
-    BASE_PRIZE: 100000,                   // Base ASDF prize amount
-    PRIZE_PER_TICKET: 10000,              // Additional ASDF per ticket in pool
-    SUPPLY_CACHE_MS: 5 * 60 * 1000        // Cache supply for 5 minutes
+    BASE_PRIZE: 100000,                   // Base ASDF prize amount (legacy - now uses pool)
+    PRIZE_PER_TICKET: 10000,              // Additional ASDF per ticket in pool (legacy)
+    SUPPLY_CACHE_MS: 5 * 60 * 1000,       // Cache supply for 5 minutes
+    // NEW: Fee-funded prize pool system
+    PRIZE_POOL_THRESHOLD: 1_000_000,      // 1M ASDF threshold to trigger lottery
+    FEE_TO_POOL_PERCENT: 0.20             // 20% of platform fees go to lottery pool
 };
 
 const PRIORITY_FEE_UNITS = 50000; 
@@ -162,7 +166,10 @@ let lotteryState = {
     currentRound: 1,
     roundStartTime: Date.now(),
     lastDrawTime: null,
-    nextDrawTime: Date.now() + LOTTERY_CONFIG.DRAW_INTERVAL_MS
+    nextDrawTime: Date.now() + LOTTERY_CONFIG.DRAW_INTERVAL_MS,
+    // NEW: Fee-funded prize pool
+    prizePool: 0,                         // Accumulated ASDF from fees
+    isThresholdReached: false             // True when prizePool >= PRIZE_POOL_THRESHOLD
 };
 let lotteryHistory = { draws: [] };
 let cachedCirculatingSupply = { value: 0, timestamp: 0 }; 
@@ -347,8 +354,16 @@ function calculateActivityMultiplier(activityDays) {
 function loadLotteryState() {
     try {
         if (fsSync.existsSync(LOTTERY_STATE_FILE)) {
-            lotteryState = JSON.parse(fsSync.readFileSync(LOTTERY_STATE_FILE));
-            console.log(`> [LOTTERY] State loaded. Round ${lotteryState.currentRound}, next draw: ${new Date(lotteryState.nextDrawTime).toISOString()}`);
+            const loadedState = JSON.parse(fsSync.readFileSync(LOTTERY_STATE_FILE));
+            // Merge loaded state with defaults (handles migration for new fields)
+            lotteryState = {
+                ...lotteryState,  // Keep defaults for new fields
+                ...loadedState    // Override with loaded values
+            };
+            // Ensure new fields exist
+            if (lotteryState.prizePool === undefined) lotteryState.prizePool = 0;
+            if (lotteryState.isThresholdReached === undefined) lotteryState.isThresholdReached = false;
+            console.log(`> [LOTTERY] State loaded. Round ${lotteryState.currentRound}, Pool: ${lotteryState.prizePool.toLocaleString()} ASDF`);
         }
         if (fsSync.existsSync(LOTTERY_HISTORY_FILE)) {
             lotteryHistory = JSON.parse(fsSync.readFileSync(LOTTERY_HISTORY_FILE));
@@ -662,8 +677,8 @@ async function executeLotteryDraw() {
 
         console.log(`> [LOTTERY] ${participants.length} participants with ${totalTickets} total tickets`);
 
-        // 3. Calculate prize
-        const prize = LOTTERY_CONFIG.BASE_PRIZE + (totalTickets * LOTTERY_CONFIG.PRIZE_PER_TICKET);
+        // 3. Calculate prize - NOW USES ACCUMULATED POOL
+        const prize = Math.floor(lotteryState.prizePool); // Use full pool as prize
 
         // 4. Select random winner using crypto.randomInt for fairness
         const randomIndex = crypto.randomInt(0, ticketPool.length);
@@ -707,6 +722,9 @@ async function executeLotteryDraw() {
         lotteryState.lastDrawTime = Date.now();
         lotteryState.nextDrawTime = Date.now() + LOTTERY_CONFIG.DRAW_INTERVAL_MS;
         lotteryState.currentRound++;
+        // Reset prize pool after successful draw
+        lotteryState.prizePool = 0;
+        lotteryState.isThresholdReached = false;
         await saveLotteryState();
 
         console.log(`> [LOTTERY] Draw complete! Winner: ${winnerPubKey.slice(0, 8)}... Prize: ${prize.toLocaleString()} ASDF`);
@@ -730,8 +748,13 @@ async function executeLotteryDraw() {
 
 // Check if it's time for a lottery draw
 async function checkLotterySchedule() {
+    // NEW: Only draw if threshold is reached
+    if (!lotteryState.isThresholdReached) {
+        return; // Pool not full yet
+    }
+
     if (Date.now() >= lotteryState.nextDrawTime) {
-        console.log("> [LOTTERY] Draw time reached. Executing...");
+        console.log("> [LOTTERY] Draw time reached and threshold met. Executing...");
         await executeLotteryDraw();
     }
 }
@@ -888,7 +911,7 @@ async function queuePayouts(frameId, result, bets, totalVolume) {
     }
 
     if (result !== "FLAT") {
-        const potLamports = Math.floor((totalVolume * 0.94) * 1e9);
+        const potLamports = Math.floor((totalVolume * PAYOUT_MULTIPLIER) * 1e9);
         const userPositions = {};
         bets.forEach(bet => {
             if (!userPositions[bet.user]) userPositions[bet.user] = { up: 0, down: 0 };
@@ -1026,13 +1049,24 @@ async function closeFrame(closePrice, closeTime) {
 
         globalStats.totalFees += feeAmt;
 
+        // NEW: Accumulate portion of fees to lottery prize pool
+        // Using SOL price (~$230) and ASDF value to estimate contribution
+        // For now: 1 SOL fee ≈ 50,000 ASDF contribution (adjustable)
+        const ASDF_PER_SOL_FEE = 50000;
+        const lotteryContribution = feeAmt * LOTTERY_CONFIG.FEE_TO_POOL_PERCENT * ASDF_PER_SOL_FEE;
+        if (lotteryContribution > 0) {
+            lotteryState.prizePool += lotteryContribution;
+            lotteryState.isThresholdReached = lotteryState.prizePool >= LOTTERY_CONFIG.PRIZE_POOL_THRESHOLD;
+            saveLotteryState().catch(e => console.error("[LOTTERY] Failed to save pool update:", e.message));
+        }
+
         let winnerCount = 0;
         let payoutTotal = 0;
         // FIX: userPositions hoisted to avoid ReferenceError below
         const userPositions = {}; 
         
         if (result !== "FLAT") {
-            const potSol = frameSol * 0.94;
+            const potSol = frameSol * PAYOUT_MULTIPLIER;
             gameState.bets.forEach(bet => {
                 if (!userPositions[bet.user]) userPositions[bet.user] = { up: 0, down: 0 };
                 if (bet.direction === 'UP') userPositions[bet.user].up += bet.shares;
@@ -1292,7 +1326,12 @@ function updatePublicStateCache() {
             nextDrawTime: lotteryState.nextDrawTime,
             msUntilDraw: Math.max(0, lotteryState.nextDrawTime - now),
             recentWinner: lotteryHistory.draws.length > 0 ? lotteryHistory.draws[0].winner : null,
-            recentPrize: lotteryHistory.draws.length > 0 ? lotteryHistory.draws[0].prize : null
+            recentPrize: lotteryHistory.draws.length > 0 ? lotteryHistory.draws[0].prize : null,
+            // NEW: Prize pool accumulation
+            prizePool: Math.floor(lotteryState.prizePool),
+            prizePoolThreshold: LOTTERY_CONFIG.PRIZE_POOL_THRESHOLD,
+            prizePoolPercent: Math.min(100, (lotteryState.prizePool / LOTTERY_CONFIG.PRIZE_POOL_THRESHOLD) * 100),
+            isThresholdReached: lotteryState.isThresholdReached
         }
     };
 }

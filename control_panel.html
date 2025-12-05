@@ -201,8 +201,8 @@
     </div>
 
     <!-- FULL HISTORY MODAL (UPDATED V1.8: ADDED OPEN/CLOSE) -->
-    <div id="full-history-modal" class="fixed inset-0 z-50 hidden modal-backdrop flex items-center justify-center">
-        <div class="bg-[#1a0f0a] border-2 border-orange-600 rounded-lg w-11/12 h-5/6 max-w-6xl flex flex-col shadow-2xl">
+    <div id="full-history-modal" class="fixed inset-0 z-50 hidden modal-backdrop flex items-center justify-center" onclick="if(event.target === this) this.classList.add('hidden')">
+        <div class="bg-[#1a0f0a] border-2 border-orange-600 rounded-lg w-11/12 h-5/6 max-w-6xl flex flex-col shadow-2xl" onclick="event.stopPropagation()">
             <div class="p-4 border-b border-orange-900 flex justify-between items-center bg-black/50">
                 <h2 class="text-xl font-bold text-white">FULL FRAME HISTORY</h2>
                 <div class="flex gap-4">
@@ -243,7 +243,12 @@
 </div>
 
 <script>
-    const API_URL = 'https://asdforecast.onrender.com/api';
+    const IS_LOCAL = ['localhost', '127.0.0.1'].includes(window.location.hostname) || window.location.hostname.includes('github.dev');
+    const API_URL = IS_LOCAL
+        ? (window.location.hostname.includes('github.dev')
+            ? window.location.origin.replace('-8080.', '-3000.') + '/api'
+            : 'http://localhost:3000/api')
+        : 'https://asdforecast.onrender.com/api';
     
     let fullHistory = [];
     let cachedAdminPassword = null;
@@ -451,11 +456,151 @@
         }
     });
 
+    // --- MISSING FUNCTIONS ---
+    async function fetchLogs() {
+        try {
+            const pwd = cachedAdminPassword;
+            if (!pwd) return;
+            const res = await fetch(`${API_URL}/admin/logs`, {
+                headers: { 'x-admin-secret': pwd }
+            });
+            const data = await res.json();
+            if (data.error) return;
+            if (data.logs && Array.isArray(data.logs)) {
+                ui.logsContainer.innerHTML = data.logs.slice(-100).map(log => {
+                    const time = new Date(log.timestamp || Date.now()).toLocaleTimeString();
+                    return `<div>[${time}] ${log.level || 'INFO'}: ${log.message}</div>`;
+                }).join('');
+                if (isLogAutoScroll) {
+                    ui.logsContainer.scrollTop = ui.logsContainer.scrollHeight;
+                }
+            }
+        } catch (e) {
+            console.error('fetchLogs error:', e);
+        }
+    }
+
+    async function fetchPayouts() {
+        try {
+            const pwd = cachedAdminPassword;
+            if (!pwd) return;
+            const res = await fetch(`${API_URL}/admin/payouts`, {
+                headers: { 'x-admin-secret': pwd }
+            });
+            const data = await res.json();
+            if (data.error) return;
+
+            // Update queue
+            if (data.queue && Array.isArray(data.queue)) {
+                ui.queueCount.innerText = `${data.queue.length} Batches`;
+                if (data.queue.length === 0) {
+                    ui.queueRows.innerHTML = '<tr><td colspan="3" class="py-2 text-center italic opacity-50">Queue Empty</td></tr>';
+                } else {
+                    ui.queueRows.innerHTML = data.queue.map(item =>
+                        `<tr><td class="py-1">${item.type || 'PAYOUT'}</td><td class="py-1">${item.recipients || item.count || 0}</td><td class="py-1">${item.retries || 0}</td></tr>`
+                    ).join('');
+                }
+            }
+
+            // Update history
+            if (data.history && Array.isArray(data.history)) {
+                if (data.history.length === 0) {
+                    ui.payoutHistoryRows.innerHTML = '<tr><td colspan="4" class="py-2 text-center italic opacity-50">No History</td></tr>';
+                } else {
+                    ui.payoutHistoryRows.innerHTML = data.history.slice(0, 20).map(p => {
+                        const time = new Date(p.timestamp || p.time).toLocaleTimeString();
+                        const txShort = p.signature ? p.signature.slice(0, 8) + '...' : '--';
+                        return `<tr><td class="py-1">${time}</td><td class="py-1">${p.type || 'WIN'}</td><td class="py-1">${(p.amount || 0).toFixed(4)}</td><td class="py-1"><a href="https://solscan.io/tx/${p.signature}" target="_blank" class="text-blue-400 hover:underline">${txShort}</a></td></tr>`;
+                    }).join('');
+                }
+            }
+        } catch (e) {
+            console.error('fetchPayouts error:', e);
+        }
+    }
+
+    async function openFullHistory() {
+        document.getElementById('full-history-modal').classList.remove('hidden');
+        try {
+            const pwd = cachedAdminPassword || prompt("ENTER ADMIN PASSWORD:");
+            if (!pwd) return;
+            cachedAdminPassword = pwd;
+
+            const res = await fetch(`${API_URL}/admin/full-history`, {
+                headers: { 'x-admin-secret': pwd }
+            });
+            const data = await res.json();
+            if (data.error) {
+                alert('Error: ' + data.error);
+                cachedAdminPassword = null;
+                return;
+            }
+
+            allFramesData = data.history || data || [];
+            renderFullHistory(allFramesData);
+        } catch (e) {
+            console.error('openFullHistory error:', e);
+        }
+    }
+
+    function renderFullHistory(frames) {
+        const rows = document.getElementById('full-history-rows');
+        if (!frames || frames.length === 0) {
+            rows.innerHTML = '<tr><td colspan="10" class="py-4 text-center italic opacity-50">No history available</td></tr>';
+            return;
+        }
+        rows.innerHTML = frames.map(f => {
+            const time = new Date(f.endTime || f.time).toLocaleString();
+            let resColor = f.result === 'UP' ? 'text-green-400' : (f.result === 'DOWN' ? 'text-red-400' : 'text-gray-400');
+            const vaultDelta = ((f.fee || 0) + (f.upkeep || 0)).toFixed(4);
+            return `<tr class="hover:bg-white/5">
+                <td class="py-2 pl-2">${time}</td>
+                <td class="py-2 ${resColor}">${f.result || '--'}</td>
+                <td class="py-2 text-right">$${(f.open || 0).toFixed(2)}</td>
+                <td class="py-2 text-right">$${(f.close || 0).toFixed(2)}</td>
+                <td class="py-2 text-right">${(f.totalSol || 0).toFixed(2)}</td>
+                <td class="py-2 text-right">${(f.fee || 0).toFixed(4)}</td>
+                <td class="py-2 text-right">${(f.upkeep || 0).toFixed(4)}</td>
+                <td class="py-2 text-right">${f.users || 0}</td>
+                <td class="py-2 text-right">${(f.payout || 0).toFixed(2)}</td>
+                <td class="py-2 text-right text-yellow-400">${vaultDelta}</td>
+            </tr>`;
+        }).join('');
+    }
+
+    function filterHistory() {
+        const search = document.getElementById('history-search').value.toLowerCase();
+        if (!search) {
+            renderFullHistory(allFramesData);
+            return;
+        }
+        const filtered = allFramesData.filter(f => {
+            const id = String(f.id || f.startTime || '').toLowerCase();
+            const result = (f.result || '').toLowerCase();
+            return id.includes(search) || result.includes(search);
+        });
+        renderFullHistory(filtered);
+    }
+
     window.onload = () => {
-        fetchLogs();
-        fetchPayouts();
+        // Prompt for admin password on load
+        cachedAdminPassword = prompt("ENTER ADMIN PASSWORD (for logs/payouts):");
+
+        poll(); // Start public data polling immediately
         setInterval(poll, 2000);
-        setInterval(fetchLogs, 2000); 
-        setInterval(fetchPayouts, 3000); 
+
+        if (cachedAdminPassword) {
+            fetchLogs();
+            fetchPayouts();
+            setInterval(fetchLogs, 5000);
+            setInterval(fetchPayouts, 5000);
+        }
+
+        // ESCAPE KEY TO CLOSE MODAL
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                document.getElementById('full-history-modal')?.classList.add('hidden');
+            }
+        });
     };
 </script>
