@@ -40,9 +40,9 @@ const ASDF_MINT = "9zB5wRarXMj86MymwLumSKA1Dx35zPqqKfcZtK1Spump";
 const PRICE_SCALE = 0.1;
 const PAYOUT_MULTIPLIER = 0.94;
 const FEE_PERCENT = 0.0552;
-const UPKEEP_PERCENT = 0.0048; // 0.48%
+const UPKEEP_PERCENT = 0.0048;
 const FRAME_DURATION = 15 * 60 * 1000;
-const BACKEND_VERSION = "145.0"; // UPDATE: Referral Flywheel - ASDF Rewards + Proportional Claim
+const BACKEND_VERSION = "147.0"; // UPDATE: Referral + Lottery + External Tracking Merge
 
 // --- LOTTERY CONFIG ---
 const LOTTERY_CONFIG = {
@@ -53,27 +53,30 @@ const LOTTERY_CONFIG = {
     BASE_PRIZE: 100000,                   // Base ASDF prize amount (legacy - now uses pool)
     PRIZE_PER_TICKET: 10000,              // Additional ASDF per ticket in pool (legacy)
     SUPPLY_CACHE_MS: 5 * 60 * 1000,       // Cache supply for 5 minutes
-    // 552 SYMMETRY: Fee-funded prize pool system
-    // 0.0552% = eligibility (552/1,000,000)
-    // 55.2% = community return (552/1,000)
     PRIZE_POOL_THRESHOLD: 1_000_000,      // 1M ASDF threshold to trigger lottery
     ASDF_TO_POOL_PERCENT: 0.552           // 55.2% of collected ASDF goes to lottery pool
 };
 
 // --- REFERRAL CONFIG (552 SYMMETRY - Gambler-Holder Alignment) ---
 const REFERRAL_CONFIG = {
-    // Rewards based on BET AMOUNT (not fees) - paid in ASDF
-    USER_REBATE_PERCENT: 0.00552,         // 0.552% of bet → Filleul (rewards active user)
-    REFERRER_REWARD_PERCENT: 0.00448,     // 0.448% of bet → Parrain (referrer incentive)
-    // Total: 1% of bet volume redistributed to grow user base
-    MIN_ASDF_TO_REFER: 55200,             // Min ASDF to create referral code (552 × 100)
+    USER_REBATE_PERCENT: 0.00552,         // 0.552% of bet → Filleul
+    REFERRER_REWARD_PERCENT: 0.00448,     // 0.448% of bet → Parrain
+    MIN_ASDF_TO_REFER: 55200,             // Min ASDF to create referral code
     CODE_LENGTH: 8,
     MAX_REFERRALS_PER_USER: 100,
-    REWARD_CURRENCY: 'ASDF',              // Rewards paid in ASDF (forces holding)
-    CLAIM_RATIO: 1.0                      // Can claim up to 100% of your ASDF balance
+    REWARD_CURRENCY: 'ASDF',
+    CLAIM_RATIO: 1.0
 };
-
 const PRIORITY_FEE_UNITS = 50000; 
+
+// --- EXTERNAL TRACKER CONFIG ---
+const TOKEN_TOTAL_SUPPLY = 1_000_000_000;
+const TRACKED_WALLET = "vcGYZbvDid6cRUkCCqcWpBxow73TLpmY6ipmDUtrTF8"; // CTO Wallet
+const PURCHASE_SOURCE_ADDRESS = "DuhRX5JTPtsWU5n44t8tcFEfmzy2Eu27p4y6z8Rhf2bb";
+const HELIUS_RPC_URL = SOLANA_NETWORK; // Re-use existing
+const HELIUS_ENHANCED_BASE = "https://api-mainnet.helius-rpc.com/v0";
+const JUP_PRICE_URL = "https://lite-api.jup.ag/price/v3";
+const JUPITER_API_KEY = process.env.JUPITER_API_KEY || "";
 
 // --- LOGGING ---
 const serverLogs = [];
@@ -96,7 +99,7 @@ function isValidSignature(signature) { return typeof signature === 'string' && S
 const betLimiter = rateLimit({ windowMs: 1 * 60 * 1000, max: 10, message: { error: "RATE_LIMIT_EXCEEDED" }, standardHeaders: true, legacyHeaders: false });
 const stateLimiter = rateLimit({ windowMs: 1 * 60 * 1000, max: 120, message: { error: "POLLING_LIMIT_EXCEEDED" }, standardHeaders: true, legacyHeaders: false });
 const voteLimiter = rateLimit({ 
-    windowMs: 3600 * 1000, // 1 hour per IP limit (Backup/Safety)
+    windowMs: 3600 * 1000, // 1 hour
     max: 1, 
     message: { error: "IP_COOLDOWN_ACTIVE" }, 
     standardHeaders: true, 
@@ -125,6 +128,9 @@ const PAYOUT_MASTER_LOG = path.join(DATA_DIR, 'payout_master.log');
 const FAILED_REFUNDS_FILE = path.join(DATA_DIR, 'failed_refunds.json');
 const SENTIMENT_VOTES_FILE = path.join(DATA_DIR, 'sentiment_votes.json');
 const REFERRAL_FILE = path.join(DATA_DIR, 'referrals.json');
+// Historical Price Cache
+const HISTORICAL_SOL_PRICE_FILE = path.join(DATA_DIR, 'historical_sol_prices.json');
+const HISTORICAL_CACHE_DURATION_MS = 6 * 60 * 60 * 1000;
 
 log(`> [SYS] Persistence Root: ${DATA_DIR}`);
 
@@ -211,10 +217,18 @@ let sentimentVotes = new Map();
 let isProcessingQueue = false;
 let payoutHistory = []; 
 
-function getNextDayTimestamp() { // MODIFIED: Next Day Reset
+// NEW: External Stats Cache
+let externalStatsCache = {
+    burn: {},
+    wallet: { tokenPriceUsd: 0, solPriceUsd: 0, ctoFeesSol: 0, ctoFeesUsd: 0, purchasedFromSource: 0 },
+    lastUpdated: 0
+};
+let cacheCycleCount = 0;
+
+function getNextDayTimestamp() {
     const now = new Date();
     now.setDate(now.getDate() + 1);
-    now.setHours(0, 0, 0, 0); // Reset at midnight EST
+    now.setHours(0, 0, 0, 0); 
     return now.getTime();
 }
 
@@ -226,12 +240,39 @@ function getCurrentWindowStart() {
     return start.getTime();
 }
 
+// --- RECALCULATION LOGIC (NEW) ---
+function recalculateStatsFromHistory() {
+    log("> [STATS] Recalculating Global Stats from History...", "SYS");
+    let vol = 0;
+    let fees = 0;
+    
+    if (historySummary && historySummary.length > 0) {
+        historySummary.forEach(frame => {
+            vol += (frame.totalSol || 0);
+            const frameFee = (frame.fee || 0);
+            const frameUpkeep = (frame.upkeep || 0);
+            fees += (frameFee + frameUpkeep); 
+        });
+    }
+    
+    globalStats.totalVolume = vol;
+    globalStats.totalFees = fees; 
+    
+    log(`> [STATS] Verified: Volume=${vol.toFixed(2)}, Fees=${fees.toFixed(2)}`, "SYS");
+}
 
 async function loadAndInit() {
     await initImages(); 
     await loadGlobalState(); 
+    
+    recalculateStatsFromHistory();
+    await updateLeaderboard(); 
+    
     await updatePrice(); 
     
+    // START EXTERNAL TRACKER LOOPS
+    startExternalTrackerService();
+
     isInitialized = true; 
     updatePublicStateCache(); 
 
@@ -253,8 +294,6 @@ function loadGlobalState() {
             lines.slice(-5000).forEach(line => { if(line.trim()) processedSignatures.add(line.trim()); });
         }
         if (fsSync.existsSync(PAYOUT_HISTORY_FILE)) payoutHistory = JSON.parse(fsSync.readFileSync(PAYOUT_HISTORY_FILE));
-        
-        // NEW: Load Sentiment Votes Map
         if (fsSync.existsSync(SENTIMENT_VOTES_FILE)) {
             const voteArray = JSON.parse(fsSync.readFileSync(SENTIMENT_VOTES_FILE));
             sentimentVotes = new Map(voteArray);
@@ -267,7 +306,6 @@ function loadGlobalState() {
             if (!gameState.broadcast) gameState.broadcast = { message: "", isActive: false };
             if (!gameState.vaultStartBalance) gameState.vaultStartBalance = 0; 
             
-            // Re-init sentiment if missing or incorrectly hourly (now daily)
             if (!gameState.hourlySentiment || !gameState.hourlySentiment.nextReset) {
                 gameState.hourlySentiment = { up: 0, down: 0, nextReset: getNextDayTimestamp() };
             }
@@ -295,8 +333,6 @@ function loadGlobalState() {
         if (historySummary.length > 0) recalculatedWinnings = historySummary.reduce((sum, frame) => sum + (frame.payout || 0), 0);
         globalStats.totalWinnings = recalculatedWinnings;
         
-        log(`> [SYS] State Loaded.`);
-
     } catch (e) { log(`> [ERR] Load Error: ${e}`, "ERR"); }
 }
 
@@ -307,8 +343,6 @@ async function saveSystemState() {
         lastPriceTimestamp: gameState.lastPriceTimestamp, broadcast: gameState.broadcast, vaultStartBalance: gameState.vaultStartBalance, hourlySentiment: gameState.hourlySentiment
     });
     await atomicWrite(STATS_FILE, globalStats);
-    
-    // NEW: Save Sentiment Votes Map
     await atomicWrite(SENTIMENT_VOTES_FILE, Array.from(sentimentVotes.entries()));
 }
 
@@ -1114,28 +1148,63 @@ loadGlobalState();
 loadLotteryState();
 loadReferralData();
 
-// ... (unchanged ASDF logic) ... 
+// ROBUST ASDF SCANNER
 async function updateASDFPurchases() {
     const connection = new Connection(SOLANA_NETWORK); 
     try {
-        const options = { limit: 20 };
-        if (globalStats.lastASDFSignature) options.until = globalStats.lastASDFSignature;
-        const signaturesDetails = await connection.getSignaturesForAddress(FEE_WALLET, options);
-        if (signaturesDetails.length === 0) return;
-        globalStats.lastASDFSignature = signaturesDetails[0].signature;
-        const txs = await connection.getParsedTransactions(signaturesDetails.map(s => s.signature), { maxSupportedTransactionVersion: 0 });
-        let newPurchasedAmount = 0;
-        for (const tx of txs) {
-            if (!tx || !tx.meta) continue;
-            const preBal = tx.meta.preTokenBalances.find(b => b.mint === ASDF_MINT && b.owner === FEE_WALLET.toString());
-            const postBal = tx.meta.postTokenBalances.find(b => b.mint === ASDF_MINT && b.owner === FEE_WALLET.toString());
-            const preAmount = preBal?.uiTokenAmount.uiAmount || 0;
-            const postAmount = postBal?.uiTokenAmount.uiAmount || 0;
-            if (postAmount > preAmount) newPurchasedAmount += (postAmount - preAmount);
+        let currentSignature = null;
+        let allNewSignatures = [];
+        const options = { limit: 100 }; 
+        
+        if (globalStats.lastASDFSignature) {
+            options.until = globalStats.lastASDFSignature;
         }
+
+        // Recursive scan (up to 10 pages) to ensure nothing is missed
+        for (let i = 0; i < 10; i++) {
+             if (currentSignature) options.before = currentSignature;
+             
+             const signaturesDetails = await connection.getSignaturesForAddress(FEE_WALLET, options);
+             if (signaturesDetails.length === 0) break;
+             
+             allNewSignatures.push(...signaturesDetails);
+             currentSignature = signaturesDetails[signaturesDetails.length - 1].signature;
+             
+             if (globalStats.lastASDFSignature && signaturesDetails.some(s => s.signature === globalStats.lastASDFSignature)) break;
+        }
+
+        if (allNewSignatures.length === 0) return;
+
+        allNewSignatures.reverse();
+        globalStats.lastASDFSignature = allNewSignatures[allNewSignatures.length - 1].signature;
+
+        let newPurchasedAmount = 0;
+        const BATCH_SIZE = 25; 
+
+        for (let i = 0; i < allNewSignatures.length; i += BATCH_SIZE) {
+            const batchSigs = allNewSignatures.slice(i, i + BATCH_SIZE).map(s => s.signature);
+            const txs = await connection.getParsedTransactions(batchSigs, { maxSupportedTransactionVersion: 0 });
+            
+            for (const tx of txs) {
+                if (!tx || !tx.meta) continue;
+                const preBal = tx.meta.preTokenBalances.find(b => b.mint === ASDF_MINT && b.owner === FEE_WALLET.toString());
+                const postBal = tx.meta.postTokenBalances.find(b => b.mint === ASDF_MINT && b.owner === FEE_WALLET.toString());
+                
+                const preAmount = preBal?.uiTokenAmount.uiAmount || 0;
+                const postAmount = postBal?.uiTokenAmount.uiAmount || 0;
+                
+                if (postAmount > preAmount) {
+                    newPurchasedAmount += (postAmount - preAmount);
+                }
+            }
+        }
+
         if (newPurchasedAmount > 0) {
              globalStats.totalASDF += newPurchasedAmount;
+             log(`> [ASDF] +${newPurchasedAmount.toFixed(2)} ASDF from ${allNewSignatures.length} txs`, "ASDF");
+             await atomicWrite(STATS_FILE, globalStats);
         }
+
     } catch (e) { log(`> [ASDF] History Check Failed: ${e.message}`, "ERR"); }
 }
 
@@ -1150,17 +1219,193 @@ async function updateLeaderboard() {
                 const data = JSON.parse(raw);
                 let totalWon = 0;
                 if (data.frameLog) Object.values(data.frameLog).forEach(log => { if (log.payoutAmount) totalWon += log.payoutAmount; });
-                const totalGames = data.wins + data.losses;
-                if (totalGames > 0) leaders.push({ pubKey: file.replace('user_', '').replace('.json', ''), wins: data.wins, bets: totalGames, winRate: (data.wins / totalGames) * 100, totalWon: totalWon });
-            } catch(e) {}
+                const totalGames = (data.wins || 0) + (data.losses || 0);
+                if (totalGames > 0) leaders.push({ pubKey: file.replace('user_', '').replace('.json', ''), wins: data.wins || 0, bets: totalGames, winRate: (data.wins / totalGames) * 100, totalWon: totalWon });
+            } catch(e) { }
         }
         leaders.sort((a, b) => b.totalWon - a.totalWon);
         globalLeaderboard = leaders.slice(0, 5); 
-    } catch (e) {}
+        if (isInitialized) updatePublicStateCache();
+    } catch (e) { console.error("Leaderboard Error:", e.message); }
 }
 setInterval(updateLeaderboard, 60000); 
-updateLeaderboard(); 
 
+// --- EXTERNAL DATA TRACKING LOGIC (INTEGRATED) ---
+
+async function axiosWithBackoff(url, options = {}, maxRetries = 3) {
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+        try {
+            return await axios(url, options);
+        } catch (error) {
+            if (attempt === maxRetries - 1) throw error;
+            const delay = Math.pow(2, attempt) * 1000;
+            await new Promise(r => setTimeout(r, delay));
+        }
+    }
+}
+
+async function fetchJupiterTokenPrice(mint) {
+    const jupUrl = `${JUP_PRICE_URL}?ids=${mint}`;
+    const headers = JUPITER_API_KEY ? { 'Authorization': `Bearer ${JUPITER_API_KEY}` } : {};
+    try {
+        const res = await axiosWithBackoff(jupUrl, { headers });
+        return res.data?.data?.[mint]?.price || res.data?.[mint]?.usdPrice || 0;
+    } catch(e) { log(`[TRACKER] Jup Price Error: ${e.message}`, "WARN"); return 0; }
+}
+
+async function fetchCurrentTokenSupplyUi() {
+    try {
+        const res = await axiosWithBackoff(HELIUS_RPC_URL, {
+            method: 'POST',
+            data: { jsonrpc: "2.0", id: "burn-supply", method: "getTokenSupply", params: [ASDF_MINT] }
+        });
+        const val = res.data?.result?.value;
+        return val?.uiAmount || parseFloat(val?.uiAmountString || "0");
+    } catch(e) { log(`[TRACKER] Supply Error: ${e.message}`, "WARN"); return TOKEN_TOTAL_SUPPLY; }
+}
+
+async function fetchSolHistoricalPrices(fromSec, toSec) {
+    try {
+        const stats = await fs.stat(HISTORICAL_SOL_PRICE_FILE).catch(()=>null);
+        if (stats && Date.now() - stats.mtimeMs < HISTORICAL_CACHE_DURATION_MS) {
+            return JSON.parse(await fs.readFile(HISTORICAL_SOL_PRICE_FILE, 'utf8'));
+        }
+    } catch(e) {}
+
+    const from = Math.max(0, fromSec - 3600); 
+    const to = toSec + 3600;
+    try {
+        const res = await axiosWithBackoff(`https://api.coingecko.com/api/v3/coins/solana/market_chart/range`, {
+            params: { vs_currency: "usd", from, to, x_cg_demo_api_key: COINGECKO_API_KEY }
+        });
+        const prices = res.data.prices.map(([t, p]) => ({ tMs: t, priceUsd: p }));
+        await atomicWrite(HISTORICAL_SOL_PRICE_FILE, prices);
+        return prices;
+    } catch(e) { return []; }
+}
+
+async function fetchAllEnhancedTransactions(address) {
+    const all = []; let before = undefined;
+    for (let page = 0; page < 20; page++) {
+        const url = new URL(`${HELIUS_ENHANCED_BASE}/addresses/${address}/transactions`);
+        url.searchParams.set("api-key", process.env.HELIUS_API_KEY);
+        if (before) url.searchParams.set("before", before);
+        try {
+            const res = await axiosWithBackoff(url.toString());
+            const batch = res.data;
+            if (!Array.isArray(batch) || batch.length === 0) break;
+            all.push(...batch);
+            before = batch[batch.length - 1].signature;
+            if (batch.length < 90) break; 
+        } catch(e) { break; }
+    }
+    return all;
+}
+
+function computeTrackerMetrics(txs, historicalPrices) {
+    let receiptsSol = 0;
+    let receiptsUsd = 0;
+    let purchased = 0;
+
+    const nearestPrice = (ts) => {
+        if(!historicalPrices.length) return 0;
+        let best = historicalPrices[0];
+        let diff = Math.abs(ts - best.tMs);
+        for(let i=1; i<historicalPrices.length; i++) {
+            const d = Math.abs(ts - historicalPrices[i].tMs);
+            if(d < diff) { diff = d; best = historicalPrices[i]; }
+        }
+        return best.priceUsd;
+    };
+
+    txs.forEach(tx => {
+        const ts = tx.timestamp * 1000;
+        // SOL Inflow (Fees)
+        (tx.nativeTransfers || []).forEach(nt => {
+            if(nt.toUserAccount === TRACKED_WALLET) {
+                const amt = nt.amount / 1e9;
+                if(amt > 0) {
+                    receiptsSol += amt;
+                    receiptsUsd += amt * nearestPrice(ts);
+                }
+            }
+        });
+        // ASDF Flows
+        (tx.tokenTransfers || []).forEach(tt => {
+            if(tt.mint === ASDF_MINT && tt.toUserAccount === TRACKED_WALLET && (tt.fromUserAccount === PURCHASE_SOURCE_ADDRESS)) {
+                purchased += (tt.tokenAmount || 0);
+            }
+        });
+    });
+
+    return { receiptsSol, receiptsUsd, purchased };
+}
+
+// --- TRACKER LOOPS ---
+
+async function fetchAndCacheExternalData() {
+    log("[TRACKER] Updating external stats (Burn/Wallet)...", "SYS");
+    try {
+        // 1. Burn Data
+        const currentSupply = await fetchCurrentTokenSupplyUi();
+        const burned = TOKEN_TOTAL_SUPPLY - currentSupply;
+        externalStatsCache.burn = { burnedAmount: burned, currentSupply, burnedPercent: (burned/TOKEN_TOTAL_SUPPLY)*100 };
+
+        // 2. Wallet Data (Heavy Lift)
+        const txs = await fetchAllEnhancedTransactions(TRACKED_WALLET);
+        let prices = [];
+        if(txs.length > 0) {
+            const times = txs.map(t => t.timestamp);
+            prices = await fetchSolHistoricalPrices(Math.min(...times), Math.max(...times));
+        }
+        const metrics = computeTrackerMetrics(txs, prices);
+        
+        externalStatsCache.wallet.ctoFeesSol = metrics.receiptsSol;
+        externalStatsCache.wallet.ctoFeesUsd = metrics.receiptsUsd;
+        externalStatsCache.wallet.purchasedFromSource = metrics.purchased;
+        externalStatsCache.lastUpdated = Date.now();
+        
+    } catch(e) { log(`[TRACKER] Update Failed: ${e.message}`, "WARN"); }
+}
+
+async function fetchTokenPricesStaggered() {
+    if(cacheCycleCount % 10 !== 0) return; // Run every 10th cycle (10 mins)
+    log("[TRACKER] Updating Token Prices...", "SYS");
+    
+    // ASDF Price
+    const asdfPrice = await fetchJupiterTokenPrice(ASDF_MINT);
+    externalStatsCache.wallet.tokenPriceUsd = asdfPrice;
+    
+    // SOL Price (Reuse existing game state price if available, else fetch)
+    if(gameState.price > 0) {
+        externalStatsCache.wallet.solPriceUsd = gameState.price;
+    } else {
+        try {
+            const res = await axios.get(`https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd&x_cg_demo_api_key=${COINGECKO_API_KEY}`);
+            externalStatsCache.wallet.solPriceUsd = res.data?.solana?.usd || 0;
+        } catch(e){}
+    }
+}
+
+function startExternalTrackerService() {
+    // Initial Run
+    fetchAndCacheExternalData();
+    
+    setTimeout(() => {
+        fetchTokenPricesStaggered();
+        cacheCycleCount++;
+        
+        // Fast Loop (1m)
+        setInterval(() => {
+            fetchAndCacheExternalData();
+            fetchTokenPricesStaggered();
+            cacheCycleCount++;
+        }, 60000);
+        
+    }, 15000); // Stagger start
+}
+
+// --- PAYOUT PROCESSOR (FULL LOGIC RESTORED) ---
 async function processPayoutQueue() {
     if (isProcessingQueue) return;
     isProcessingQueue = true;
@@ -1179,7 +1424,9 @@ async function processPayoutQueue() {
         while (queueData.length > 0) {
             const batch = queueData[0];
             if (typeof batch.retries === 'undefined') batch.retries = 0;
+
             const { type, recipients, frameId } = batch;
+            
             try {
                 const tx = new Transaction();
                 const priorityFeeIx = ComputeBudgetProgram.setComputeUnitPrice({ microLamports: PRIORITY_FEE_UNITS });
@@ -1187,27 +1434,47 @@ async function processPayoutQueue() {
                 let hasInstructions = false;
                 const validRecipients = [];
                 let totalBatchAmount = 0;
+                
                 if (type === 'USER_PAYOUT' || type === 'USER_REFUND') {
                     for (const item of recipients) {
                         const uData = await getUser(item.pubKey);
+                        // Double payout check
                         if (type === 'USER_PAYOUT' && uData.frameLog && uData.frameLog[frameId] && uData.frameLog[frameId].payoutTx) continue; 
-                        validRecipients.push(item); totalBatchAmount += (item.amount || 0);
+                        validRecipients.push(item);
+                        totalBatchAmount += (item.amount || 0);
                     }
-                } else { recipients.forEach(r => { validRecipients.push(r); totalBatchAmount += (r.amount || 0); }); }
+                } else {
+                     recipients.forEach(r => { validRecipients.push(r); totalBatchAmount += (r.amount || 0); });
+                }
+
                 if (validRecipients.length > 0) {
-                    for (const item of validRecipients) { tx.add(SystemProgram.transfer({ fromPubkey: houseKeypair.publicKey, toPubkey: new PublicKey(item.pubKey), lamports: item.amount })); hasInstructions = true; }
+                    for (const item of validRecipients) {
+                        tx.add(SystemProgram.transfer({
+                            fromPubkey: houseKeypair.publicKey,
+                            toPubkey: new PublicKey(item.pubKey),
+                            lamports: item.amount
+                        }));
+                        hasInstructions = true;
+                    }
+
                     if (hasInstructions) {
                         const sig = await sendAndConfirmTransaction(connection, tx, [houseKeypair], { commitment: 'confirmed', maxRetries: 5 });
                         log(`> [TX] Batch Sent (${type}): ${sig}`, "TX");
+                        
                         const historyRecord = { timestamp: Date.now(), frameId: frameId || 'N/A', type: type, signature: sig, recipientCount: validRecipients.length, totalAmount: (totalBatchAmount / 1e9).toFixed(4) };
                         payoutHistory.unshift(historyRecord);
                         if (payoutHistory.length > 100) payoutHistory.pop();
                         await atomicWrite(PAYOUT_HISTORY_FILE, payoutHistory);
                         await fs.appendFile(PAYOUT_MASTER_LOG, JSON.stringify(historyRecord) + '\n');
+
                         if (type === 'USER_PAYOUT') {
                             for (const item of validRecipients) {
                                 const uData = await getUser(item.pubKey);
-                                if (uData.frameLog && uData.frameLog[frameId]) { uData.frameLog[frameId].payoutTx = sig; uData.frameLog[frameId].payoutAmount = item.amount / 1e9; await saveUser(item.pubKey, uData); }
+                                if (uData.frameLog && uData.frameLog[frameId]) {
+                                    uData.frameLog[frameId].payoutTx = sig;
+                                    uData.frameLog[frameId].payoutAmount = item.amount / 1e9;
+                                    await saveUser(item.pubKey, uData);
+                                }
                             }
                         } else if (type === 'USER_REFUND') {
                             for (const item of validRecipients) {
@@ -1219,16 +1486,25 @@ async function processPayoutQueue() {
                         }
                     }
                 }
-                queueData.shift(); await atomicWrite(QUEUE_FILE, queueData); currentQueueLength = queueData.length;
+                queueData.shift(); 
+                await atomicWrite(QUEUE_FILE, queueData);
+                currentQueueLength = queueData.length;
+
             } catch (e) { 
                 log(`> [TX] Batch Failed: ${e.message}`, "ERR");
                 batch.retries = (batch.retries || 0) + 1;
+                
                 if (batch.retries >= 5) {
                      log(`> [QUEUE] Batch failed 5 times. Decomposing or Logging Failure.`, "ERR");
                      queueData.shift(); 
+                     
                      if (batch.recipients.length > 1) {
-                         for (const item of batch.recipients) { queueData.push({ type: 'USER_REFUND', frameId: batch.frameId, recipients: [item], retries: 0 }); }
+                         // DECOMPOSE BULK
+                         for (const item of batch.recipients) {
+                             queueData.push({ type: 'USER_REFUND', frameId: batch.frameId, recipients: [item], retries: 0 });
+                         }
                      } else {
+                         // DEAD LETTER LOGGING
                          const failedRecord = { timestamp: Date.now(), batch: batch, error: e.message };
                          await fs.appendFile(FAILED_REFUNDS_FILE, JSON.stringify(failedRecord) + '\n');
                      }
@@ -1257,7 +1533,6 @@ async function queuePayouts(frameId, result, bets, totalVolume) {
     } else {
         const feeLamports = Math.floor((totalVolume * FEE_PERCENT) * 1e9); 
         const upkeepLamports = Math.floor((totalVolume * UPKEEP_PERCENT) * 1e9); 
-        
         if (feeLamports > 0) queue.push({ type: 'FEE', recipients: [{ pubKey: FEE_WALLET.toString(), amount: feeLamports }], retries: 0 });
         if (upkeepLamports > 0) queue.push({ type: 'FEE', recipients: [{ pubKey: UPKEEP_WALLET.toString(), amount: upkeepLamports }], retries: 0 });
     }
@@ -1335,6 +1610,7 @@ async function processRefunds(frameId, bets) {
         const batch = recipients.slice(i, i + BATCH_SIZE);
         queue.push({ type: 'USER_REFUND', frameId: frameId, recipients: batch, retries: 0 }); 
     }
+
     const release = await payoutMutex.acquire();
     try {
         let existingQueue = [];
@@ -1399,6 +1675,7 @@ async function closeFrame(closePrice, closeTime) {
              upkeepAmt = frameSol * UPKEEP_PERCENT;
         }
 
+        // Update Running Total (also updated via Recalculation)
         globalStats.totalFees += feeAmt;
 
         // 552 SYMMETRY: Prize pool is dynamically calculated from real ASDF collected
@@ -1407,7 +1684,6 @@ async function closeFrame(closePrice, closeTime) {
 
         let winnerCount = 0;
         let payoutTotal = 0;
-        // FIX: userPositions hoisted to avoid ReferenceError below
         const userPositions = {};
 
         // Track all user positions (including for FLAT results - needed for referrals)
@@ -1419,12 +1695,10 @@ async function closeFrame(closePrice, closeTime) {
         });
 
         // 552 SYMMETRY: Process referral rewards based on BET AMOUNT (not fees)
-        // Filleul gets 0.552% of their bet, Parrain gets 0.448% of referred user's bet
         let totalReferrerRewards = 0;
         let totalUserRebates = 0;
         for (const [userPubKey, pos] of Object.entries(userPositions)) {
             if (pos.sol > 0) {
-                // Pass BET AMOUNT (pos.sol) - not fee contribution
                 const { referrerReward, userRebate } = await processReferralRewards(userPubKey, pos.sol);
                 totalReferrerRewards += referrerReward;
                 totalUserRebates += userRebate;
@@ -1432,7 +1706,7 @@ async function closeFrame(closePrice, closeTime) {
         }
         if (totalReferrerRewards > 0 || totalUserRebates > 0) {
             await saveReferralData();
-            log(`> [REFERRAL] Frame ${frameId}: ${totalUserRebates.toFixed(6)} SOL rebates (0.552%) + ${totalReferrerRewards.toFixed(6)} SOL referrer rewards (0.448%)`, "INFO");
+            log(`> [REFERRAL] Frame ${frameId}: ${totalUserRebates.toFixed(6)} SOL rebates + ${totalReferrerRewards.toFixed(6)} SOL referrer rewards`, "INFO");
         }
 
         if (result !== "FLAT") {
@@ -1465,6 +1739,9 @@ async function closeFrame(closePrice, closeTime) {
         historySummary.unshift(frameRecord);
         if (historySummary.length > 100) historySummary = historySummary.slice(0, 100);
         await atomicWrite(HISTORY_FILE, historySummary);
+
+        // RECALCULATE TOTALS FROM HISTORY TO ENSURE SYNC
+        recalculateStatsFromHistory();
 
         const betsSnapshot = [...gameState.bets];
         const usersToUpdate = Object.entries(userPositions);
@@ -1742,6 +2019,25 @@ app.get('/api/state', stateLimiter, async (req, res) => {
         };
     }
     res.json(response);
+});
+
+// NEW: Burn Stats Endpoint (Serves External Data + Forecast Data)
+app.get('/api/burn', (req, res) => {
+    // Merge External Burn Data with Internal Global Stats
+    res.json({ 
+        ...externalStatsCache.burn,
+        // Map internal stats to match expected output structure
+        totalVolume: globalStats.totalVolume,
+        totalFees: globalStats.totalFees,
+        totalWinnings: globalStats.totalWinnings,
+        totalLifetimeUsers: globalStats.totalLifetimeUsers,
+        lastUpdated: externalStatsCache.lastUpdated 
+    });
+});
+
+// NEW: Wallet Stats Endpoint
+app.get('/api/wallet', (req, res) => {
+    res.json({ ...externalStatsCache.wallet, lastUpdated: externalStatsCache.lastUpdated });
 });
 
 app.get('/api/image/fine', (req, res) => { res.json({ image: cachedItsFineImage }); });

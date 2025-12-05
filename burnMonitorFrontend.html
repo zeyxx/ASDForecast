@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ASDF Burn & Cultist Donations</title>
+    <!-- Tailwind CSS (for styling) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Google Fonts (for styling) -->
+    <link href="https://fonts.googleapis.com/css2?family=Comic+Neue:wght@400;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+
+    <style>
+        /* THEME: Terminal / Fire */
+        #asd-app {
+            font-family: 'Comic Neue', cursive; 
+            background-color: #451a03; 
+            color: #ffedd5;
+            position: relative;
+            border: 6px solid #7c2d12;
+            border-radius: 16px;
+            overflow: hidden;
+            /* REMOVED min-height: 100vh; to allow dynamic height */
+        }
+        #asd-app .font-mono { font-family: 'JetBrains Mono', monospace; }
+
+        .panel {
+            background: rgba(20, 10, 5, 0.6);
+            border: 2px solid #ea580c;
+            border-radius: 8px;
+            box-shadow: 4px 4px 0 #9a3412;
+        }
+        .panel-footer {
+            border-top: 1px solid #7c2d12;
+            padding-top: 1rem;
+            margin-top: 1rem;
+        }
+
+        /* Ticker styling */
+        .ticker-wrap { width: 100%; background-color: #2a1005; border-bottom: 2px solid #7c2d12; overflow: hidden; white-space: nowrap; height: 32px; display: flex; align-items: center; }
+        .ticker { display: inline-block; padding-left: 100%; animation: marquee 27s linear infinite; font-family: 'JetBrains Mono', monospace; font-size: 12px; }
+        .ticker-wrap:hover .ticker { animation-duration: 54s; }
+        .ticker-item { display: inline-block; padding: 0 20px; color: #fb923c; }
+        @keyframes marquee { 0% { transform: translate(0, 0); } 100% { transform: translate(-100%, 0); } }
+
+        /* Custom bar styling for the burn progress */
+        .burn-bar-container { 
+            height: 24px; 
+            background: #2a1005; 
+            border-radius: 12px; 
+            overflow: hidden; 
+            border: 1px solid #7c2d12; 
+            display: flex; 
+            position: relative;
+            margin-top: 1rem;
+        }
+        .burn-bar-fill { 
+            height: 100%; 
+            transition: width 0.5s ease;
+            background: linear-gradient(90deg, #ffcc33, #ff9c33, #ff5c33, #ff2e2e);
+            box-shadow: 0 0 12px rgba(255, 120, 0, 0.7);
+        }
+        .burn-flame {
+            position: absolute;
+            top: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 1.2rem;
+            text-shadow: 0 0 8px rgba(255, 160, 0, 0.9);
+            animation: burn-flicker 0.6s infinite alternate ease-in-out;
+            pointer-events: none;
+        }
+        @keyframes burn-flicker {
+            0% { transform: translate(-50%, -48%) scale(1); opacity: 0.8; }
+            100% { transform: translate(-50%, -54%) scale(1.12); opacity: 1; }
+        }
+        
+        /* Enforcing non-bold text for elements other than H1 */
+        h2, h3, h4, .text-xl, .text-2xl, .text-4xl, .text-5xl {
+            font-weight: 400; /* Regular weight */
+        }
+        .font-bold {
+             font-weight: 400; /* Override for compliance */
+        }
+        h1 {
+            font-weight: 700; /* Keep H1 bold */
+        }
+
+        /* MODAL Styles */
+        .modal-overlay { backdrop-filter: blur(4px); }
+        .modal-content { background: #1a0f0a; border: 3px solid #ea580c; border-radius: 12px; max-width: 90%; width: 600px; max-height: 90vh; overflow-y: auto; }
+
+    </style>
+</head>
+<body>
+
+<div id="asd-app">
+    <!-- Ticker Section -->
+    <div class="ticker-wrap">
+        <div id="ticker-content" class="ticker">
+            <div class="ticker-item">ASDF Burn Tracker Online</div>
+            <div class="ticker-item">Burn Goal: 25% of supply (250,000,000 ASDF)</div>
+            <div class="ticker-item">Data is cached and updated approximately every minute.</div>
+        </div>
+    </div>
+
+    <div class="p-6">
+        <!-- Header Section -->
+        <div class="flex flex-col md:flex-row justify-between items-center mb-8 border-b-4 border-orange-900 pb-4">
+            <div class="flex items-center gap-4 mb-4 md:mb-0">
+                <div class="text-6xl">🔥</div>
+                <div>
+                    <!-- H1 kept bold -->
+                    <h1 class="text-4xl text-white font-bold">ASDF Burn Ledger</h1>
+                    <p class="text-orange-300">Tracking ASDF buybacks and burns on Solana</p>
+                </div>
+            </div>
+            
+            <div class="flex flex-col items-end">
+                <!-- Status Indicator (Combined) -->
+                <div id="top-status-indicator" class="flex items-center gap-2 text-xs font-mono bg-black/40 px-3 py-2 rounded border border-red-900/50 text-red-500 transition-colors duration-500">
+                    <span id="status-dot" class="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span>
+                    <span id="status-text">OFFLINE</span>
+                </div>
+                <!-- About Button -->
+                <button onclick="document.getElementById('about-modal').classList.remove('hidden')" class="text-[10px] font-mono text-orange-500/70 mt-1 mr-1 underline hover:text-white transition-colors">
+                    ABOUT THIS TRACKER
+                </button>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 mb-8">
+            
+            <!-- LEFT: Burn Progress & Wallet Ledger (Main Content) -->
+            <div class="lg:col-span-7 space-y-6">
+                
+                <!-- Burn Progress Panel -->
+                <div class="panel p-6">
+                    <div class="flex justify-between items-end">
+                        <div class="flex flex-col">
+                            <h3 class="text-sm text-orange-500 uppercase">ASDF Token Burn Status</h3>
+                            <span id="burnPercentDisplay" class="text-5xl font-mono text-white">--%</span>
+                            <!-- Removed burnStatusMessage element -->
+                        </div>
+                        <div class="text-right">
+                            <h3 class="text-sm text-orange-500 uppercase">Current Supply</h3>
+                            <div id="currentSupply" class="text-4xl font-mono text-white">---</div>
+                        </div>
+                    </div>
+
+                    <div class="burn-bar-container">
+                        <div id="burnBarFill" class="burn-bar-fill" style="width: 0%"></div>
+                        <div id="burnFlame" class="burn-flame" style="left: 0%">🔥</div>
+                    </div>
+                    
+                    <div class="grid grid-cols-3 text-xs font-mono text-orange-400 mt-1">
+                        <span>0% Goal: 25%</span>
+                        <span id="burnAmountDisplay" class="text-center">0 ASDF Burned</span>
+                        <span id="totalSupplyBase" class="text-right">Total: 1,000,000,000</span>
+                    </div>
+                </div>
+
+                <!-- Wallet/Cultist Ledger Panel -->
+                <div class="panel p-6 bg-black/20 relative">
+                    <h3 class="text-lg text-white mb-4">Flame Ledger & Cultist Donations</h3>
+                    <div class="text-sm font-mono text-white mb-4">
+                        <span class="text-orange-500">Tracked Wallet:</span> <span class="text-green-400">vcGYZbvDid6cRUkCCqcWpBxow73TLpmY6ipmDUtrTF8</span>
+                    </div>
+                    
+                    <div class="grid grid-cols-2 gap-4 text-center">
+                        <div class="bg-orange-900/20 p-4 rounded border border-orange-500/30">
+                            <h4 class="text-sm text-orange-400 uppercase mb-2">Total CTO Fees Received</h4>
+                            <div id="ctoFeesSol" class="text-2xl font-mono text-white">0.00 SOL</div>
+                            <div id="ctoFeesUsd" class="text-lg font-mono text-green-400/70">($0.00 USD)</div>
+                        </div>
+                        <div class="bg-orange-900/20 p-4 rounded border border-orange-500/30">
+                            <h4 class="text-sm text-orange-400 uppercase mb-2">ASDF Bought Back & Burnt</h4>
+                            <div id="purchasedFromSource" class="text-2xl font-mono text-white">0 ASDF</div>
+                        </div>
+                    </div>
+                    
+                    <div class="mt-6 border-t border-orange-900/50 pt-4">
+                        <h4 class="text-sm text-red-400 uppercase mb-2">Cultist Donations (Sacrificed)</h4>
+                        <div class="grid grid-cols-2 gap-4 text-center">
+                            <div class="bg-red-900/20 p-4 rounded border border-red-500/30">
+                                <h4 class="text-xs font-mono text-red-400 uppercase">ASDF Sacrificed</h4>
+                                <div id="asdfSacrificed" class="text-2xl font-mono text-white">0 ASDF</div>
+                            </div>
+                            <div class="bg-red-900/20 p-4 rounded border border-red-500/30">
+                                <h4 class="text-xs font-mono text-red-400 uppercase">USD Value (Current)</h4>
+                                <div id="asdfSacrificedUsd" class="text-2xl font-mono text-green-400/70">$0.00</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Sacrifice vs Purchase Ratio -->
+                    <div class="mt-4 bg-yellow-900/20 p-2 rounded border border-yellow-900/50 text-center">
+                        <div class="text-[10px] text-yellow-400 uppercase">Sacrifice vs. Purchase Ratio</div>
+                        <div id="sacrificedRatio" class="text-lg font-mono text-yellow-300">Calculating...</div>
+                    </div>
+
+                    <p id="walletStatus" class="panel-footer text-[10px] font-mono text-orange-500/70">Awaiting data...</p>
+                </div>
+            </div>
+
+            <!-- RIGHT: Price & ASDForecast Fees Panels (Secondary Column) -->
+            <div class="lg:col-span-5 space-y-6">
+
+                <!-- Current Price Panel (Using Helius/CoinGecko data) -->
+                <div class="panel p-6 flex flex-col justify-between bg-[#2a1208]">
+                    <div class="space-y-4">
+                        <h2 class="text-xl text-white mb-2">Current Market Prices</h2>
+                        <div class="bg-black/20 p-3 rounded border border-white/10 text-center">
+                            <div class="text-[10px] text-orange-400 uppercase">Solana (SOL) Price</div>
+                            <div id="currentSolPrice" class="text-xl font-mono text-white">---</div>
+                        </div>
+                        <div class="bg-black/20 p-3 rounded border border-white/10 text-center">
+                            <div class="text-[10px] text-yellow-400 uppercase">ASDF Price (USD)</div>
+                            <div id="currentAsdfPrice" class="text-xl font-mono text-yellow-300">---</div>
+                        </div>
+                        <div class="bg-red-900/20 p-2 rounded border border-red-900/50 text-center">
+                            <div class="text-[10px] text-red-400 uppercase">Estimated Total USD Value Burned</div>
+                            <div id="totalUsdBurned" class="text-lg font-mono text-red-300">$0.00</div>
+                        </div>
+                    </div>
+                    <div class="panel-footer text-xs font-mono text-gray-500">Prices update every 10 minutes (Tiered Caching).</div>
+                </div>
+
+
+                <!-- ASDForecast Fees Panel -->
+                <div class="panel p-6 bg-black/20">
+                    <h2 class="text-xl text-white mb-4">ASDForecast Fees</h2>
+                    
+                    <div class="grid grid-cols-2 gap-3 text-center mb-4">
+                        <div class="bg-gray-900/20 p-3 rounded border border-gray-700/50">
+                            <div class="text-[10px] text-blue-400 uppercase">Lifetime Degens</div>
+                            <div id="forecastUsers" class="text-xl font-mono text-blue-300">0</div>
+                        </div>
+                        <div class="bg-gray-900/20 p-3 rounded border border-gray-700/50">
+                            <div class="text-[10px] text-orange-400 uppercase">Lifetime Volume</div>
+                            <div id="forecastVolume" class="text-xl font-mono text-white">0.00 SOL</div>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-3 text-center">
+                         <div class="bg-gray-900/20 p-3 rounded border border-gray-700/50">
+                            <div class="text-[10px] text-red-400 uppercase">Lifetime Fees</div>
+                            <div id="forecastFees" class="text-xl font-mono text-red-300">0.00 SOL</div>
+                        </div>
+                        <div class="bg-gray-900/20 p-3 rounded border border-gray-700/50">
+                            <div class="text-[10px] text-green-400 uppercase">Lifetime Payouts</div>
+                            <div id="forecastPayouts" class="text-xl font-mono text-green-300">0.00 SOL</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="text-center text-[10px] text-gray-600 font-mono mt-4">
+            Burn Monitor v1.1 | Connected to ASDForecast Engine
+        </div>
+    </div>
+</div>
+
+<!-- About Modal -->
+<div id="about-modal" class="modal-overlay fixed inset-0 z-50 hidden flex items-center justify-center bg-black/60">
+    <div class="modal-content p-6 text-sm text-orange-200/80 font-mono space-y-4">
+        <div class="flex justify-between items-center border-b border-orange-900/50 pb-2 mb-4">
+            <h2 class="text-xl text-white">🔥 About the Burn Ledger Calculations</h2>
+            <button onclick="document.getElementById('about-modal').classList.add('hidden')" class="text-gray-400 hover:text-white text-2xl">✕</button>
+        </div>
+
+        <div class="space-y-4">
+            <p class="text-white border-l-4 border-yellow-500 pl-3">
+                This tracker analyzes the official ASDF buyback wallet (`vcGYZbvDid6cRUkCCqcWpBxow73TLpmY6ipmDUtrTF8`) and compares public token supply data to provide transparent metrics on ASDF burning.
+            </p>
+
+            <div>
+                <h3 class="text-orange-400 uppercase text-sm">1. Burned vs. Sacrificed</h3>
+                <p>The **Total ASDF Burned** is calculated by taking the token's initial supply (1 Billion) and subtracting the current circulating supply, as reported by the Solana RPC via Helius.</p>
+                <p>The **ASDF Sacrificed (Cultist Donations)** amount is the most crucial figure. It is calculated by subtracting the team's official buybacks (`ASDF Bought Back & Burnt`, sourced from `DuhRX5JTPtsWU5n44t8tcFEfmzy2Eu27p4y6z8Rhf2bb`) from the **Total ASDF Burned**. Any difference is attributed to tokens donated or sacrificed by the community.</p>
+            </div>
+
+            <div>
+                <h3 class="text-orange-400 uppercase text-sm">2. CTO Fees & Historical Value</h3>
+                <p>The **Total CTO Fees Received** tracks all incoming native SOL transfers to the wallet. The **USD Value** uses historical CoinGecko data corresponding to the exact time of the transaction, providing an accurate representation of the USD worth *at the time of transfer*.</p>
+            </div>
+
+            <div>
+                <h3 class="text-orange-400 uppercase text-sm">3. Pricing & Caching</h3>
+                <p>Current **ASDF** and **SOL** prices are sourced from **Jupiter** and **CoinGecko**, respectively. These spot prices are cached on the backend and only updated once every **10 minutes** to reduce API costs and improve stability.</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    (function() {
+        // --- CONFIGURATION ---
+        const TOKEN_TOTAL_SUPPLY = 1_000_000_000;
+        // UPDATED: Using the integrated backend URL
+        const BACKEND_URL = "https://asdforecast.onrender.com"; 
+        
+        // --- GLOBAL STATE ---
+        let globalBurnedAmount = null;
+        let globalPurchasedAmount = null;
+        let globalTokenPrice = 0;
+        let globalSolPrice = 0;
+        let pollTimeout = null;
+        let backendOnline = false;
+
+        // --- DOM REFS ---
+        const ui = {
+            // Header
+            statusText: document.getElementById('status-text'),
+            topStatus: document.getElementById('top-status-indicator'),
+            
+            // Burn Panel
+            burnPercentDisplay: document.getElementById('burnPercentDisplay'),
+            currentSupply: document.getElementById('currentSupply'),
+            burnBarFill: document.getElementById('burnBarFill'),
+            burnFlame: document.getElementById('burnFlame'),
+            burnAmountDisplay: document.getElementById('burnAmountDisplay'),
+            
+            // Wallet Panel
+            ctoFeesSol: document.getElementById('ctoFeesSol'),
+            ctoFeesUsd: document.getElementById('ctoFeesUsd'),
+            purchasedFromSource: document.getElementById('purchasedFromSource'),
+            asdfSacrificed: document.getElementById('asdfSacrificed'),
+            asdfSacrificedUsd: document.getElementById('asdfSacrificedUsd'),
+            walletStatus: document.getElementById('walletStatus'),
+            
+            // Price Panel
+            currentSolPrice: document.getElementById('currentSolPrice'),
+            currentAsdfPrice: document.getElementById('currentAsdfPrice'),
+            totalUsdBurned: document.getElementById('totalUsdBurned'),
+            
+            // Projections (moved to Wallet)
+            sacrificedRatio: document.getElementById('sacrificedRatio'),
+            
+            // ASDForecast Panel
+            forecastVolume: document.getElementById('forecastVolume'),
+            forecastFees: document.getElementById('forecastFees'),
+            forecastPayouts: document.getElementById('forecastPayouts'),
+            forecastUsers: document.getElementById('forecastUsers'),
+        };
+        
+        // --- UTILS ---
+        function formatNumber(n, decimals = 2) {
+            if (typeof n !== "number" || !isFinite(n)) return "--";
+            if (n < 0.01 && decimals === 2) decimals = 6; 
+            return n.toLocaleString("en-US", { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+        }
+        function formatInteger(n) {
+            if (typeof n !== "number" || !isFinite(n)) return "--";
+            return Math.round(n).toLocaleString("en-US");
+        }
+        function clamp(v, min, max) {
+            return Math.max(min, Math.min(max, v));
+        }
+
+        // --- CORE LOGIC ---
+
+        function updateBurnBar(burnedPercent) {
+            const clamped = clamp(burnedPercent, 0, 25);
+            const barPct = (clamped / 25) * 100;
+            ui.burnBarFill.style.width = barPct.toFixed(2) + "%";
+            ui.burnFlame.style.left = barPct.toFixed(2) + "%";
+        }
+
+        function updateStatus(online, cacheTimeMs = null) {
+            const cacheTime = cacheTimeMs ? new Date(cacheTimeMs).toLocaleTimeString() : '---';
+            if (online) {
+                ui.statusText.textContent = `ONLINE (Cached: ${cacheTime})`;
+                ui.topStatus.className = "flex items-center gap-2 text-xs font-mono bg-black/40 px-3 py-2 rounded border border-green-900/50 transition-colors duration-500";
+            } else {
+                ui.statusText.textContent = "OFFLINE";
+                ui.topStatus.className = "flex items-center gap-2 text-xs font-mono bg-black/40 px-3 py-2 rounded border border-red-900/50 transition-colors duration-500";
+            }
+        }
+
+        function calculateMetrics() {
+            // 1. Calculations based on Burn/Purchase/Price
+            if (globalBurnedAmount !== null && globalPurchasedAmount !== null) {
+                const sacrificed = Math.max(0, globalBurnedAmount - globalPurchasedAmount);
+                ui.asdfSacrificed.textContent = formatInteger(sacrificed) + " ASDF";
+                
+                const totalBuybackSource = sacrificed + globalPurchasedAmount;
+                if (totalBuybackSource > 0) {
+                    const ratio = (sacrificed / totalBuybackSource) * 100;
+                    ui.sacrificedRatio.textContent = `S:${ratio.toFixed(1)}% / P:${(100 - ratio).toFixed(1)}%`;
+                } else {
+                    ui.sacrificedRatio.textContent = `0 ASDF tracked`;
+                }
+
+                if (globalTokenPrice > 0) {
+                    const sacrificedUsd = sacrificed * globalTokenPrice;
+                    ui.asdfSacrificedUsd.textContent = "$" + formatNumber(sacrificedUsd, 2);
+
+                    const totalUsdBurned = (globalBurnedAmount * globalTokenPrice);
+                    ui.totalUsdBurned.textContent = "$" + formatNumber(totalUsdBurned, 2);
+                } else {
+                     ui.asdfSacrificedUsd.textContent = "--";
+                     ui.totalUsdBurned.textContent = "--";
+                }
+            }
+        }
+
+        async function loadBurnData() {
+            try {
+                // Removed burnStatusMessage display here as it's now handled by the main status
+                const res = await fetch(`${BACKEND_URL}/api/burn`);
+                if (!res.ok) {
+                     if (res.status === 503) throw new Error("Backend initializing.");
+                     throw new Error("Burn API failed");
+                }
+                
+                const data = await res.json();
+                
+                // Update STATUS
+                updateStatus(true, data.lastUpdated);
+
+                // Update BURN Panel
+                ui.burnPercentDisplay.textContent = data.burnedPercent.toFixed(2) + "%";
+                ui.currentSupply.textContent = formatInteger(data.currentSupply);
+                ui.burnAmountDisplay.textContent = formatInteger(data.burnedAmount) + " ASDF Burned";
+                updateBurnBar(data.burnedPercent);
+                
+                // Update FORECAST Panel (Data is merged into /api/burn response)
+                ui.forecastVolume.textContent = formatNumber(data.totalVolume, 2) + " SOL";
+                ui.forecastFees.textContent = formatNumber(data.totalFees, 2) + " SOL";
+                ui.forecastPayouts.textContent = formatNumber(data.totalWinnings, 2) + " SOL";
+                ui.forecastUsers.textContent = formatInteger(data.totalLifetimeUsers);
+
+                // Update Global State & trigger dependent calculations
+                globalBurnedAmount = data.burnedAmount;
+                calculateMetrics();
+
+            } catch (err) {
+                console.error("Burn Data Error:", err);
+                updateStatus(false);
+                globalBurnedAmount = 0;
+            }
+        }
+
+        async function loadWalletData() {
+            try {
+                ui.walletStatus.textContent = "Fetching wallet history and prices...";
+                const res = await fetch(`${BACKEND_URL}/api/wallet`);
+                if (!res.ok) {
+                    if (res.status === 503) throw new Error("Backend initializing.");
+                    throw new Error("Wallet API failed");
+                }
+
+                const data = await res.json();
+                
+                // Update DOM (Wallet Panel)
+                ui.ctoFeesSol.textContent = formatNumber(data.ctoFeesSol, 2) + " SOL";
+                ui.ctoFeesUsd.textContent = `($${formatNumber(data.ctoFeesUsd, 2)} USD)`;
+                ui.purchasedFromSource.textContent = formatInteger(data.purchasedFromSource) + " ASDF";
+
+                // Update Price Panel
+                globalSolPrice = data.solPriceUsd || 0;
+                ui.currentSolPrice.textContent = globalSolPrice > 0 ? `$${formatNumber(globalSolPrice, 2)}` : '---';
+                
+                globalTokenPrice = data.tokenPriceUsd || 0;
+                ui.currentAsdfPrice.textContent = globalTokenPrice > 0 ? `$${formatNumber(globalTokenPrice, 6)}` : '---';
+                
+                ui.walletStatus.textContent = "Wallet data loaded.";
+                ui.walletStatus.classList.remove("text-red-500");
+
+                // Update Global State & trigger dependent calculations
+                globalPurchasedAmount = data.purchasedFromSource;
+                calculateMetrics();
+
+            } catch (err) {
+                console.error("Wallet Data Error:", err);
+                 ui.walletStatus.textContent = "Wallet data failed to load.";
+                ui.walletStatus.classList.add("text-red-500");
+                globalPurchasedAmount = 0;
+            }
+        }
+        
+        async function checkBackendStatus() {
+            try {
+                // Modified check: The new backend /state endpoint is more reliable for health checks
+                const res = await fetch(`${BACKEND_URL}/api/state`);
+                if (!res.ok) throw new Error("Failed to reach backend.");
+                backendOnline = true;
+            } catch (e) {
+                backendOnline = false;
+                updateStatus(false);
+            }
+        }
+
+        // --- POLLING FUNCTION ---
+        async function pollData() {
+            await checkBackendStatus();
+            if (backendOnline) {
+                // Load data from cache
+                await loadBurnData();
+                await loadWalletData();
+            }
+
+            // Set up next poll with jitter (4-6 seconds)
+            const jitter = Math.floor(Math.random() * 2000);
+            pollTimeout = setTimeout(pollData, 4000 + jitter);
+        }
+
+        // --- INIT ---
+        window.addEventListener("DOMContentLoaded", () => {
+            pollData();
+            
+            document.addEventListener("visibilitychange", () => {
+                if (document.hidden) {
+                    if (pollTimeout) { clearTimeout(pollTimeout); pollTimeout = null; }
+                } else {
+                    pollData();
+                }
+            });
+        });
+    })();
+</script>
+</body>
+</html>

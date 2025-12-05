@@ -1,6 +1,4 @@
-<!-- ASDForecast v143.0 // UI: LOTTERY + SENTIMENT MERGE -->
-
-<!-- Dependencies -->
+<!-- ASDForecast v147.0 // UI: LOTTERY + REFERRAL + EXTERNAL TRACKING MERGE -->
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://unpkg.com/@solana/web3.js@latest/lib/index.iife.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=Comic+Neue:wght@400;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
@@ -95,7 +93,6 @@
     <div class="ticker-wrap"><div id="ticker-content" class="ticker"><div class="ticker-item">Watching the world burn...</div></div></div>
 
     <div class="p-6">
-        <!-- HEADER -->
         <div class="flex flex-col md:flex-row justify-between items-center mb-8 border-b-4 border-orange-900 pb-4">
             <div class="flex items-center gap-4 mb-4 md:mb-0">
                 <div class="text-6xl animate-bounce">🔥</div>
@@ -120,9 +117,7 @@
             </div>
         </div>
 
-        <!-- MAIN GRID -->
         <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 mb-8">
-            <!-- LEFT: DATA -->
             <div class="lg:col-span-7 space-y-6">
                 <div class="panel p-6">
                     <div class="flex justify-between items-start">
@@ -144,9 +139,8 @@
                     </div>
                 </div>
 
-                <!-- SENTIMENT (SHARES) -->
                 <div class="panel p-6 bg-black/20 relative">
-                    <h3 id="net-shares-header" class="text-lg font-bold text-white mb-4">Net Shares Bought</h3>
+                    <h3 id="net-shares-header" class="text-lg font-bold text-white mb-4 text-center">Share Market</h3>
                     <div class="flex justify-between text-sm font-bold font-mono text-white mb-1">
                         <span class="text-green-400">UP: <span id="lbl-shares-up">0</span></span>
                         <span class="text-red-400">DOWN: <span id="lbl-shares-down">0</span></span>
@@ -170,7 +164,6 @@
                     </div>
                 </div>
 
-                <!-- HISTORY PANEL -->
                 <div class="panel p-6 bg-black/40">
                     <div class="flex justify-between items-center mb-4">
                         <h3 class="text-lg font-bold text-white">Previous Frames</h3>
@@ -184,27 +177,22 @@
                     </div>
                 </div>
 
-                <!-- HOURLY SENTIMENT METER -->
-                <div class="panel p-6 bg-black/40 border-orange-900/30 border-2">
+                <div class="panel p-6 bg-black/40 border-orange-900/30 border-2 hidden">
                     <div class="flex justify-between items-center mb-4">
-                         <h3 class="text-sm font-bold text-orange-400 uppercase tracking-wider">Hourly Crowd Sentiment</h3>
+                         <h3 class="text-sm font-bold text-orange-400 uppercase tracking-wider">Daily Crowd Sentiment</h3>
                          <span class="text-[10px] font-mono text-gray-500" id="sent-timer">Reset: --:--</span>
                     </div>
                     
                     <div class="flex items-center gap-4">
-                        <!-- UP BUTTON -->
                         <button id="btn-sent-up" onclick="voteSentiment('UP')" class="sent-btn sent-btn-up" title="Vote Up">
                             <img id="img-sent-up" src="" class="sent-img" alt="UP" onerror="this.style.display='none'">
                         </button>
                         
-                        <!-- PROGRESS BAR -->
                         <div class="flex-grow h-4 bg-gray-900 rounded-full overflow-hidden border border-gray-700 relative">
                             <div id="sent-bar-fill" class="h-full bg-green-500 transition-all duration-500" style="width: 50%"></div>
-                            <!-- Center Marker -->
                             <div class="absolute top-0 bottom-0 left-1/2 w-0.5 bg-black/50"></div>
                         </div>
                         
-                        <!-- DOWN BUTTON -->
                         <button id="btn-sent-down" onclick="voteSentiment('DOWN')" class="sent-btn sent-btn-down" title="Vote Down">
                             <img id="img-sent-down" src="" class="sent-img" alt="DOWN" onerror="this.style.display='none'">
                         </button>
@@ -214,19 +202,17 @@
                         <span>UP: <span id="val-sent-up" class="text-green-400 font-bold">0</span></span>
                         <span>DOWN: <span id="val-sent-down" class="text-red-400 font-bold">0</span></span>
                     </div>
-                    <p class="text-[9px] text-center mt-3 text-gray-600 font-mono">Vote once per 15 mins. Resets hourly.</p>
+                    <p class="text-[9px] text-center mt-3 text-gray-600 font-mono">Vote once per 15 mins. Resets daily.</p>
                 </div>
 
             </div>
 
-            <!-- RIGHT: TERMINAL -->
             <div class="lg:col-span-5">
                 <div class="panel h-full p-6 flex flex-col justify-between bg-[#2a1208]">
                     <div class="mb-6 border-b border-orange-900/50 pb-4">
                         <div class="flex justify-between items-center text-xs text-orange-400 font-mono mb-1"><span>AVAILABLE BALANCE</span><div class="flex items-center gap-3"><button id="disconnect-btn" class="text-red-500 hover:text-red-400 underline hidden font-bold">[ DISCONNECT ]</button><button onclick="refreshBalance()" class="hover:text-white" title="Refresh">↻</button></div></div>
                         <div class="text-2xl font-mono font-bold text-white mb-4"><span id="balance">0.0000</span> SOL</div>
 
-                        <!-- USER STATS & SHARE -->
                         <div id="user-stats-container" class="hidden space-y-3">
                             <div class="flex gap-2">
                                 <div class="grid grid-cols-2 gap-2 text-xs font-mono bg-black/30 p-2 rounded flex-grow">
@@ -247,15 +233,15 @@
                                 <div class="flex justify-between items-center border-t border-orange-500/20 pt-1 mt-1"><span class="text-orange-300/70">Est. Win Payout:</span><span id="stat-payout" class="text-yellow-400 font-bold">0.00 SOL</span></div>
                             </div>
                             
-                            <!-- LAST FRAME PERFORMANCE (UPDATED LAYOUT) -->
-                            <div class="bg-black/50 p-2 rounded border border-orange-900/50 text-xs font-mono">
-                                <span class="text-gray-400 block mb-1 uppercase tracking-wider text-[10px]">YOUR LAST FRAME RESULTS</span>
-                                <div id="last-frame-stats" class="text-orange-200 italic opacity-50">Waiting for close...</div>
+                            <div class="bg-orange-900/20 p-2 rounded border border-orange-900/50 text-xs font-mono flex justify-between items-center gap-2">
+                                <div class="flex-grow">
+                                    <span class="text-gray-400 block mb-1 uppercase tracking-wider text-[10px]">YOUR LAST FRAME RESULTS</span>
+                                    <div id="last-frame-data" class="text-orange-200 italic opacity-50">Waiting for close...</div>
+                                </div>
                             </div>
                         </div>
                     </div>
 
-                    <!-- ORDER FORM -->
                     <div id="order-form" class="opacity-50 pointer-events-none relative">
                         <div id="pause-overlay" class="hidden absolute inset-0 bg-black/80 z-50 flex flex-col items-center justify-center text-center rounded"><span class="text-3xl">🛑</span><span id="pause-text" class="text-red-500 font-bold text-xl">MARKET PAUSED</span><span class="text-xs text-orange-300 mt-2">Maintenance / Refund Mode</span></div>
                         <h2 class="text-xl font-bold text-white mb-4">Fuel the Fire</h2>
@@ -276,13 +262,13 @@
             </div>
         </div>
 
-        <!-- STATS -->
         <div class="panel p-4 bg-black/40 mb-8">
             <h3 class="text-xs font-bold text-orange-500 uppercase tracking-wider mb-2">Global Damage Report</h3>
             <div class="grid grid-cols-2 md:grid-cols-3 gap-6 text-center md:text-left">
-                <div><span class="block text-[10px] text-orange-400 font-mono uppercase">Total Volume</span><span id="global-vol" class="text-xl font-bold font-mono text-white">0.00 SOL</span></div>
-                <div><span class="block text-[10px] text-orange-400 font-mono uppercase">Ash Pile (Fees)</span><span id="global-fees" class="text-xl font-bold font-mono text-red-400">0.00 SOL</span></div>
+                <div><span class="block text-[10px] text-orange-400 font-mono uppercase">Lifetime Volume</span><span id="global-vol" class="text-xl font-bold font-mono text-white">0.00 SOL</span></div>
+                <div><span class="block text-[10px] text-orange-400 font-mono uppercase">Lifetime Fees</span><span id="global-fees" class="text-xl font-bold font-mono text-red-400">0.00 SOL</span></div>
                 <div><span class="block text-[10px] text-orange-400 font-mono uppercase">ASDF Purchased</span><span id="global-asdf" class="text-xl font-bold font-mono text-yellow-400">0 ASDF</span></div>
+                
                 <div>
                     <span class="block text-[10px] text-orange-400 font-mono uppercase">Last Payout</span>
                     <a id="link-last-payout" href="https://solscan.io/account/BXSp5y6Ua6tB5fZDe1EscVaaEaZLg1yqzrsPqAXhKJYy" target="_blank" class="text-xl font-bold font-mono text-white hover:text-orange-400 transition-colors underline decoration-dotted decoration-orange-900" title="Verify on Solscan">--</a>
@@ -292,7 +278,6 @@
             </div>
         </div>
 
-        <!-- LEADERBOARD -->
         <div class="panel p-6 bg-black/40 mb-8">
             <h3 class="text-lg font-bold text-white mb-4">🏆 Top 5 Degens</h3>
             <div class="overflow-x-auto">
@@ -495,10 +480,10 @@
                 <div><strong class="text-white block mb-1 text-base border-l-4 border-orange-500 pl-2">3. PRICING FORMULA</strong><p class="mb-2">The system maintains a constant invariant: <code>Price(UP) + Price(DOWN) = 0.1 SOL</code>.</p><div class="bg-black/50 p-3 rounded border border-orange-900/50 font-mono text-xs text-green-400">Share Price = (Liquidity_In_Direction / Total_Liquidity) * 0.1</div><p class="mt-2 text-xs text-gray-500">Note: A small virtual liquidity buffer (50 shares) is applied to both sides at the start of a frame to prevent infinite price swings on the very first bet.</p></div>
                 <div><strong class="text-white block mb-1 text-base border-l-4 border-orange-500 pl-2">4. PAYOUTS & FEES</strong><ul class="list-disc list-inside ml-2 space-y-2 text-orange-100/80 text-xs"><li><strong>THE ASH PILE (FEES):</strong> 5.52% of the Total Volume (all wagers combined) is deducted automatically. This revenue is sent to the Fee Wallet to buy back and burn <strong>$ASDFASDFA</strong>.</li><li><strong>House Reserve:</strong> 0.48% is retained to cover Solana network rent and transaction gas fees.</li><li><strong>The Winner's Pot:</strong> The remaining 94% of the Total Volume is the pot.</li><li><strong>Distribution:</strong> the pot is then distributed to winners divided among them based on how many shares they own, proportional to the total amount of winning shares.</li><li class="text-red-400"><strong>TOTAL MELTDOWN (FLAT MARKET):</strong> If the Open Price and Close Price are identical (0.00% Change), nobody wins. The house burns down. 99% of the pot is sent to the incinerator (Fee Wallet).</li><li class="text-red-400"><strong>THE HEDGE PARADOX:</strong> If you hold an exact equal amount of UP and DOWN shares (a flat position), you have signaled no conviction. The system treats this as a LOSS, regardless of the outcome. You will receive 0 payout.</li></ul></div>
                 <div><strong class="text-white block mb-1 text-base border-l-4 border-orange-500 pl-2">5. SCENARIOS</strong><div class="space-y-3 text-xs mt-2"><div class="bg-black/30 p-3 rounded border-l-2 border-green-500"><span class="text-green-400 font-bold block mb-1">Scenario A: The Crowd Follower (Consensus)</span><p class="opacity-80"><strong>The Situation:</strong> The market is bullish. 90 SOL is on UP, 10 SOL is on DOWN.<br><strong>Your Bet:</strong> You bet 1 SOL on UP.<br><strong>The Outcome:</strong> UP Wins.<br><strong>The Math:</strong> The Pot is ~94 SOL. You own roughly 1.1% of the winning pool.<br><strong>Result:</strong> You receive ~1.04 SOL back. A small, safe 4% profit.</p></div><div class="bg-black/30 p-3 rounded border-l-2 border-yellow-500"><span class="text-yellow-400 font-bold block mb-1">Scenario B: The Contrarian (Longshot)</span><p class="opacity-80"><strong>The Situation:</strong> The market is bullish (90 SOL UP vs 10 SOL DOWN).<br><strong>Your Bet:</strong> You bet 1 SOL on DOWN (The Underdog).<br><strong>The Outcome:</strong> DOWN Wins.<br><strong>The Math:</strong> The Pot is ~94 SOL. You own roughly 10% of the winning pool (since the pool is small).<br><strong>Result:</strong> You receive ~9.40 SOL back. A massive 840% profit for betting against the crowd.</p></div></div></div>
-                <div class="mt-6 border-t-2 border-red-900/50 pt-4 bg-red-900/10 p-4 rounded"><strong class="text-red-500 block mb-1 text-lg">⚠️ DISCLAIMER & RISK WARNING</strong><p class="xs text-orange-200 leading-relaxed">This platform is currently LIVE on Solana Mainnet. The operators are not responsible for lost funds, smart contract errors, oracle latency, or network failures. <br><br><strong>PREDICT RESPONSIBLY:</strong> Never wager funds you cannot afford to lose. This is an experimental technology demonstration.</p></div>
+                <div class="mt-6 border-t-2 border-red-900/50 pt-4 bg-red-900/10 p-4 rounded"><strong class="text-red-500 block mb-1 text-lg">⚠️ DISCLAIMER & RISK WARNING</strong><p class="text-xs text-orange-200 leading-relaxed">This platform is currently LIVE on Solana Mainnet. The operators are not responsible for lost funds, smart contract errors, oracle latency, or network failures. <br><br><strong>PREDICT RESPONSIBLY:</strong> Never wager funds you cannot afford to lose. This is an experimental technology demonstration.</p></div>
             </div>
         </div>
-        <div class="text-center text-xs text-gray-500 font-mono pt-2 border-t border-orange-900/50"><span class="text-orange-400">Frontend v122.0</span> | Backend <span id="backend-version">v---</span></div>
+        <div class="text-center text-xs text-gray-500 font-mono pt-2 border-t border-orange-900/50"><span class="text-orange-400">Frontend v126.5</span> | Backend <span id="backend-version">v---</span></div>
     </div>
 
     <!-- SHARE MODAL -->
@@ -517,7 +502,6 @@
     <!-- HISTORY MODAL -->
     <div id="history-modal" class="fixed inset-0 z-50 hidden flex items-center justify-center bg-black/80 backdrop-blur-sm" onclick="if(event.target === this) this.classList.add('hidden')">
         <div class="history-card flex flex-col" onclick="event.stopPropagation()">
-            <!-- Modal Header -->
             <div class="p-4 border-b border-orange-900/50 flex justify-between items-center bg-[#1d120e]">
                 <div>
                     <h2 class="text-xl font-bold text-white">FRAME HISTORY</h2>
@@ -529,7 +513,6 @@
                 </div>
             </div>
             
-            <!-- Modal Body (Scrollable Table) -->
             <div class="flex-grow overflow-y-auto custom-scroll p-4 bg-black/20">
                 <table class="w-full text-xs font-mono text-left">
                     <thead class="text-orange-500 border-b border-orange-900/50 sticky top-0 bg-[#1d120e] shadow-lg">
@@ -546,8 +529,7 @@
                         </tr>
                     </thead>
                     <tbody id="public-history-rows" class="text-orange-200/80 divide-y divide-orange-900/20">
-                        <!-- Populated via JS -->
-                    </tbody>
+                        </tbody>
                 </table>
             </div>
         </div>
@@ -566,9 +548,10 @@
     const HELIUS_RPC_URL = "https://mainnet.helius-rpc.com/?api-key=3ce79dab-c031-4ebe-a060-edc91bf0edee";
     
     let PublicKey, SystemProgram, Transaction;
-    let state = { pubKey: null, prices: { up: 0.05, down: 0.05 }, conn: null, fullHistory: [], lastFrameId: null, userLog: {}, isHistoryExpanded: false, isAboutExpanded: false, isOnline: false, targetEndTime: null, isResetting: false, isCancelled: false, baseImageSrc: null, images: { fine: null, over: null, sentUp: null, sentDown: null } };
+    let state = { pubKey: null, prices: { up: 0.05, down: 0.05 }, conn: null, fullHistory: [], lastFrameId: null, userLog: {}, isHistoryExpanded: false, isAboutExpanded: false, isOnline: false, targetEndTime: null, isResetting: false, isCancelled: false, baseImageSrc: null, images: { fine: null, over: null, sentUp: null, sentDown: null }, solBalance: 0 };
     let ui = {};
-    let pollTimeout = null; // Store timeout ID for cleanup
+    let pollTimeout = null; // Store market data timeout ID for cleanup
+    let balanceIntervalId = null; // NEW: Store balance interval ID
 
     window.addEventListener('load', () => {
         if (window.solanaWeb3) {
@@ -597,8 +580,13 @@
             historyRows: document.getElementById('history-rows'), historyContainer: document.getElementById('history-container'),
             statsContainer: document.getElementById('user-stats-container'), statWin: document.getElementById('stat-winrate'), statVol: document.getElementById('stat-volume'),
             statActUp: document.getElementById('stat-active-up'), statActDown: document.getElementById('stat-active-down'),
-            statPayout: document.getElementById('stat-payout'), lastFrameStats: document.getElementById('last-frame-stats'),
-            aboutContent: document.getElementById('about-content'), aboutIcon: document.getElementById('about-icon'),
+            statActUpSol: document.getElementById('stat-active-up-sol'), // ADDED
+            statActDownSol: document.getElementById('stat-active-down-sol'), // ADDED
+            statPayout: document.getElementById('stat-payout'), 
+            
+            // UPDATE: Mapped to the new ID
+            lastFrameStats: document.getElementById('last-frame-data'),
+            
             // RESTORED IDs
             statGlobalVol: document.getElementById('global-vol'), 
             statGlobalFees: document.getElementById('global-fees'), 
@@ -651,6 +639,10 @@
             // SENTIMENT IMAGES
             imgSentUp: document.getElementById('img-sent-up'),
             imgSentDown: document.getElementById('img-sent-down'),
+            sentTimer: document.getElementById('sent-timer'),
+            // ABOUT TOGGLE
+            aboutContent: document.getElementById('about-content'),
+            aboutIcon: document.getElementById('about-icon'),
             // REFERRAL UI ELEMENTS
             referralCodeDisplay: document.getElementById('referral-code-display'),
             referralCodeStatus: document.getElementById('referral-code-status'),
@@ -677,20 +669,23 @@
 
         ui.connect.onclick = connect;
         ui.disconnect.onclick = disconnectWallet;
+        // Call updateCosts when quantity changes
         ui.qty.oninput = () => { ui.qty.value = Math.floor(Math.max(1, ui.qty.value)); updateCosts(); };
 
-        // Fetch Images immediately (FIXED TO ASSIGN TO STATE)
-        fetch(`${API_URL}/image/fine`).then(r=>r.json()).then(d=>{ if(d.image) state.images.fine = d.image; });
-        fetch(`${API_URL}/image/over`).then(r=>r.json()).then(d=>{ if(d.image) state.images.over = d.image; });
-        fetch(`${API_URL}/image/sentiment-up`).then(r=>r.json()).then(d=>{ if(d.image) { state.images.sentUp = d.image; } });
-        fetch(`${API_URL}/image/sentiment-down`).then(r=>r.json()).then(d=>{ if(d.image) { state.images.sentDown = d.image; } });
+        // Fetch Images immediately
+        fetch(`${API_URL}/api/image/fine`).then(r=>r.json()).then(d=>{ if(d.image) state.images.fine = d.image; });
+        fetch(`${API_URL}/api/image/over`).then(r=>r.json()).then(d=>{ if(d.image) state.images.over = d.image; });
+        fetch(`${API_URL}/api/image/sentiment-up`).then(r=>r.json()).then(d=>{ if(d.image && ui.imgSentUp) { ui.imgSentUp.src = d.image; state.images.sentUp = d.image; } });
+        fetch(`${API_URL}/api/image/sentiment-down`).then(r=>r.json()).then(d=>{ if(d.image && ui.imgSentDown) { ui.imgSentDown.src = d.image; state.images.sentDown = d.image; } });
 
         // PAGE VISIBILITY OPTIMIZATION
         document.addEventListener("visibilitychange", () => {
             if (document.hidden) {
                 if (pollTimeout) { clearTimeout(pollTimeout); pollTimeout = null; }
+                if (balanceIntervalId) { clearInterval(balanceIntervalId); balanceIntervalId = null; } // NEW: Stop balance check
             } else {
                 poll(); // Immediate update on wake
+                if (state.pubKey && !balanceIntervalId) startBalancePolling(); // NEW: Restart balance check if connected
             }
         });
 
@@ -708,6 +703,23 @@
         setTimeout(() => { if(window.solana?.isPhantom) window.solana.connect({onlyIfTrusted:true}).then(onConnect).catch(()=>{}); }, 500);
     });
     
+    // NEW: Function to start periodic balance checks
+    function startBalancePolling() {
+        if (!state.pubKey) return;
+        if (balanceIntervalId) clearInterval(balanceIntervalId);
+        // Start polling immediately and then every 20 seconds
+        refreshBalance(); 
+        balanceIntervalId = setInterval(refreshBalance, 20000); 
+    }
+
+    // NEW: Function to stop periodic balance checks
+    function stopBalancePolling() {
+        if (balanceIntervalId) {
+            clearInterval(balanceIntervalId);
+            balanceIntervalId = null;
+        }
+    }
+
     // NEW: Sentiment Vote Logic with PubKey Validation
     window.voteSentiment = async function(dir) {
         if (!state.pubKey) {
@@ -813,11 +825,79 @@
     };
 
     async function connect() { try { await window.solana.connect(); onConnect(await window.solana.connect()); } catch(e){} }
-    async function disconnectWallet() { if(window.solana) await window.solana.disconnect(); state.pubKey = null; state.userLog = {}; ui.connect.innerText = "Connect Phantom"; ui.form.classList.add('opacity-50', 'pointer-events-none'); ui.disconnect.classList.add('hidden'); ui.bal.innerText = "0.0000"; ui.statsContainer.classList.add('hidden'); renderHistory(); if(lotteryEligibilityInterval) { clearInterval(lotteryEligibilityInterval); lotteryEligibilityInterval = null; } fetchLotteryEligibility(); if(referralStatsInterval) { clearInterval(referralStatsInterval); referralStatsInterval = null; } fetchReferralStats(); }
-    function onConnect(resp) { state.pubKey = resp.publicKey; ui.connect.innerText = `👤 ${resp.publicKey.toString().slice(0,4)}...`; ui.form.classList.remove('opacity-50', 'pointer-events-none'); ui.disconnect.classList.remove('hidden'); refreshBalance(); poll(); startLotteryEligibilityPolling(); startReferralPolling(); }
-    async function refreshBalance() { if(state.pubKey) { const bal = await state.conn.getBalance(state.pubKey); ui.bal.innerText = (bal/1e9).toFixed(4); } }
-    function adjustQty(n) { if(ui.qty.disabled) return; let v = parseInt(ui.qty.value) + n; if(v < 1) v = 1; ui.qty.value = Math.floor(v); updateCosts(); }
-    function updateCosts() { const q = parseInt(ui.qty.value) || 0; if(state.prices.up && ui.costUp) { ui.costUp.innerText = (q * state.prices.up).toFixed(3) + " SOL"; ui.costDown.innerText = (q * state.prices.down).toFixed(3) + " SOL"; } }
+    async function disconnectWallet() {
+        if(window.solana) await window.solana.disconnect();
+        stopBalancePolling();
+        state.pubKey = null;
+        state.solBalance = 0;
+        state.userLog = {};
+        ui.connect.innerText = "Connect Phantom";
+        ui.form.classList.add('opacity-50', 'pointer-events-none');
+        ui.disconnect.classList.add('hidden');
+        ui.bal.innerText = "0.0000";
+        ui.statsContainer.classList.add('hidden');
+        renderHistory();
+        updateCosts();
+        if(lotteryEligibilityInterval) { clearInterval(lotteryEligibilityInterval); lotteryEligibilityInterval = null; }
+        if(referralStatsInterval) { clearInterval(referralStatsInterval); referralStatsInterval = null; }
+        fetchLotteryEligibility();
+        fetchReferralStats();
+    }
+    function onConnect(resp) {
+        state.pubKey = resp.publicKey;
+        ui.connect.innerText = `👤 ${resp.publicKey.toString().slice(0,4)}...`;
+        ui.form.classList.remove('opacity-50', 'pointer-events-none');
+        ui.disconnect.classList.remove('hidden');
+        startBalancePolling();
+        poll();
+        startLotteryEligibilityPolling();
+        startReferralPolling();
+    }
+    async function refreshBalance() {
+        if(state.pubKey) {
+            try {
+                const bal = await state.conn.getBalance(state.pubKey);
+                state.solBalance = bal / 1e9;
+                ui.bal.innerText = state.solBalance.toFixed(4);
+                updateCosts();
+            } catch (e) {
+                console.error("Failed to refresh balance:", e);
+                updateCosts();
+            }
+        }
+    }
+    function adjustQty(n) {
+        if(ui.qty.disabled) {
+            alert("Cannot adjust quantity while market is paused or calculating results.");
+            return;
+        }
+        let v = parseInt(ui.qty.value) + n;
+        if(v < 1) v = 1;
+        ui.qty.value = Math.floor(v);
+        updateCosts();
+    }
+    function updateCosts() {
+        const q = parseInt(ui.qty.value) || 0;
+        if(state.prices.up && ui.costUp) {
+            const costUp = q * state.prices.up;
+            const costDown = q * state.prices.down;
+            ui.costUp.innerText = costUp.toFixed(3) + " SOL";
+            ui.costDown.innerText = costDown.toFixed(3) + " SOL";
+            const isMarketBlocking = state.isResetting || state.isCancelled || state.isPaused || (state.targetEndTime && state.targetEndTime <= Date.now() + 500);
+            const isConnected = !!state.pubKey;
+            ui.qty.disabled = isMarketBlocking || !isConnected;
+            ui.btnInc.disabled = isMarketBlocking || !isConnected;
+            ui.btnDec.disabled = isMarketBlocking || !isConnected;
+            const hasUpFunds = costUp <= state.solBalance;
+            const hasDownFunds = costDown <= state.solBalance;
+            ui.btnUp.disabled = isMarketBlocking || !hasUpFunds || !isConnected;
+            ui.btnDown.disabled = isMarketBlocking || !hasDownFunds || !isConnected;
+            if (!hasUpFunds) { ui.costUp.classList.add('text-red-500'); ui.costUp.classList.remove('text-green-300'); }
+            else { ui.costUp.classList.remove('text-red-500'); ui.costUp.classList.add('text-green-300'); }
+            if (!hasDownFunds) { ui.costDown.classList.add('text-red-500'); ui.costDown.classList.remove('text-red-300'); }
+            else { ui.costDown.classList.remove('text-red-500'); ui.costDown.classList.add('text-red-300'); }
+        }
+    }
 
     // --- SHARE STATS LOGIC (UPDATED) ---
     window.openShareModal = async function() {
@@ -837,7 +917,8 @@
                  const vol = document.getElementById('stat-volume').innerText;
                  let totalWon = 0; Object.values(state.userLog).forEach(f => { if(f.payoutAmount) totalWon += f.payoutAmount; });
                  ctx.fillStyle = "rgba(0,0,0,0.6)"; ctx.fillRect(40, 120, 720, 240); ctx.fillStyle = "#fff"; ctx.font = "bold 30px sans-serif"; ctx.lineWidth = 4;
-                 ctx.strokeText(`WIN RATE: ${rate}`, 80, 180); ctx.fillText(`WIN RATE: ${rate}`, 80, 180); ctx.strokeText(`W/L:      ${wins}/${total-wins}`, 80, 230); ctx.fillText(`W/L:      ${wins}/${total-wins}`, 80, 230);
+                 ctx.strokeText(`WIN RATE: ${rate}`, 80, 180); ctx.fillText(`WIN RATE: ${rate}`, 80, 180);
+                 ctx.strokeText(`W/L:      ${wins}/${total-wins}`, 80, 230); ctx.fillText(`W/L:      ${wins}/${total-wins}`, 80, 230);
                  ctx.strokeText(`VOLUME:   ${vol}`, 80, 280); ctx.fillText(`VOLUME:   ${vol}`, 80, 280);
                  ctx.fillStyle = "#4ade80"; ctx.strokeText(`WON:      ${totalWon.toFixed(2)} SOL`, 80, 330); ctx.fillText(`WON:      ${totalWon.toFixed(2)} SOL`, 80, 330);
              }
@@ -861,15 +942,31 @@
 
     function renderHistory() {
         if (!state.fullHistory || state.fullHistory.length === 0) { ui.historyRows.innerHTML = '<tr><td colspan="6" class="py-2 italic opacity-50">Waiting for first frame close...</td></tr>'; return; }
-        const validHistory = state.fullHistory.filter(f => (f.endTime || 0) <= Date.now()); const dataToShow = validHistory.slice(0, 3);
+        const now = Date.now(); const validHistory = state.fullHistory.filter(f => (f.endTime || 0) <= now); const dataToShow = state.isHistoryExpanded ? validHistory.slice(0, 50) : validHistory.slice(0, 3);
+
         ui.historyRows.innerHTML = dataToShow.map(f => {
-            const timeVal = f.endTime ? f.endTime : f.time; const time = new Date(timeVal).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+            // MODIFIED: Use endTime for display time if available, fallback to start time
+            const timeVal = f.endTime ? f.endTime : f.time;
+            const time = new Date(timeVal).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+            
             let resColor = f.result==='UP'?'text-green-400':(f.result==='DOWN'?'text-red-400':(f.result==='CANCELLED'?'text-red-600 font-bold':(f.result==='PAUSED'?'text-yellow-500 font-bold':'text-gray-400')));
             let userStatus = '<span class="text-gray-600">-</span>';
-            if (f.result === 'PAUSED') userStatus = `<span class="text-yellow-500">SKIPPED</span>`; else if (f.result === 'CANCELLED') { if (state.userLog && state.userLog[f.id]) userStatus = `<span class="text-yellow-400 font-bold">REFUNDED</span>`; } 
-            else if (state.userLog && state.userLog[f.id]) { const log = state.userLog[f.id]; if (log.result === 'LOSS') userStatus = `<span class="text-red-500 font-bold">LOSS (${(log.wagered||0).toFixed(3)})</span>`; else if (log.result === 'REFUNDED_ERROR') userStatus = `<span class="text-yellow-500 font-bold">⚠️ ERR: REFUNDED</span>`; else if (log.payoutTx) userStatus = `<a href="https://solscan.io/tx/${log.payoutTx}" target="_blank" class="text-green-400 underline">WIN (+${log.payoutAmount?.toFixed(3)})</a>`; else if (log.result === 'WIN') userStatus = `<span class="text-green-600">WIN (Processing)</span>`; }
+            
+            if (f.result === 'PAUSED') {
+                 userStatus = `<span class="text-yellow-500">SKIPPED</span>`;
+            } else if (f.result === 'CANCELLED') {
+                 if (state.userLog && state.userLog[f.id]) userStatus = `<span class="text-yellow-400 font-bold">REFUNDED</span>`;
+            } else if (state.userLog && state.userLog[f.id]) {
+                const log = state.userLog[f.id];
+                if (log.result === 'LOSS') userStatus = `<span class="text-red-500 font-bold">LOSS (${(log.wagered||0).toFixed(3)})</span>`;
+                // UPDATE: Handle REFUNDED_ERROR status from backend
+                else if (log.result === 'REFUNDED_ERROR') userStatus = `<span class="text-yellow-500 font-bold">⚠️ ERR: REFUNDED</span>`;
+                else if (log.payoutTx) userStatus = `<a href="https://solscan.io/tx/${log.payoutTx}" target="_blank" class="text-green-400 underline">WIN (+${log.payoutAmount?.toFixed(3)})</a>`;
+                else if (log.result === 'WIN') userStatus = `<span class="text-green-600">WIN (Processing)</span>`;
+            }
             return `<tr class="border-b border-orange-900/20"><td class="py-2">${time}</td><td class="py-2 font-bold ${resColor}">${f.result}</td><td class="py-2">$${(f.open||0).toFixed(2)}</td><td class="py-2">$${(f.close||0).toFixed(2)}</td><td class="py-2">${(f.totalSol||0).toFixed(2)}</td><td class="py-2">${userStatus}</td></tr>`;
         }).join('');
+        //REMOVED DUE TO A BUG. Suspect this hid the Expand section previously, no longer an issue. if(state.fullHistory.length > 3) ui.btnExpand.classList.remove('hidden');
     }
 
     function renderTicker(trades) {
@@ -878,8 +975,15 @@
     }
 
     function renderLeaderboard(data) {
-        if (!data || data.length === 0) { ui.leaderboardRows.innerHTML = '<tr><td colspan="4" class="py-2 italic opacity-50 text-center">No Data Yet</td></tr>'; return; }
-        ui.leaderboardRows.innerHTML = data.map((user, index) => `<tr class="border-b border-orange-900/20"><td class="py-2 text-white font-bold"><span class="text-orange-500 mr-2">#${index+1}</span> ${user.pubKey.slice(0,5)}...</td><td class="py-2 text-right text-gray-300">${user.bets}</td><td class="py-2 text-right text-yellow-400">${user.winRate.toFixed(0)}%</td><td class="py-2 text-right text-green-400 font-bold">${user.totalWon.toFixed(2)} SOL</td></tr>`).join('');
+        if (!data || data.length === 0) { ui.leaderboardRows.innerHTML = '<tr><td colspan="4" class="py-2 italic opacity-50 text-center">No Degens Yet</td></tr>'; return; }
+        ui.leaderboardRows.innerHTML = data.map((user, index) => `
+            <tr class="border-b border-orange-900/20">
+                <td class="py-2 text-white font-bold"><span class="text-orange-500 mr-2">#${index+1}</span> ${user.pubKey.slice(0,5)}...</td>
+                <td class="py-2 text-right text-gray-300">${user.bets}</td>
+                <td class="py-2 text-right text-yellow-400">${user.winRate.toFixed(0)}%</td>
+                <td class="py-2 text-right text-green-400 font-bold">${user.totalWon.toFixed(2)} SOL</td>
+            </tr>
+        `).join('');
     }
 
     // --- LOTTERY FUNCTIONS ---
@@ -1239,149 +1343,323 @@
     // ==================== END REFERRAL SYSTEM ====================
 
     async function poll() {
+        // Prevent polling if tab hidden (redundant check for safety)
         if (document.hidden) return;
+        
+        // Safety guard: Ensure UI is initialized
         if (!ui || !ui.price) return;
 
         try {
-            let url = `${API_URL}/state`; if(state.pubKey) url += `?user=${state.pubKey.toString()}`;
-            const res = await fetch(url); if(!res.ok) throw new Error(res.statusText); const data = await res.json();
+            let url = `${API_URL}/state`;
+            if(state.pubKey) url += `?user=${state.pubKey.toString()}`;
+            const res = await fetch(url);
             
-            state.isOnline = true; ui.statusText.innerText = "ONLINE"; ui.statusText.className = "text-green-400"; ui.topStatus.className = "flex items-center gap-2 text-xs font-mono bg-black/40 px-3 py-2 rounded border border-green-900/50 transition-colors duration-500";
-            if(ui.lastUpdated && data.lastPriceTimestamp) ui.lastUpdated.innerText = `Price Data: ${new Date(data.lastPriceTimestamp).toLocaleTimeString()}`; if(data.backendVersion) ui.backendVersion.innerText = `v${data.backendVersion}`;
-            state.isResetting = data.isResetting; state.isCancelled = data.isCancelled;
-
-            if (data.isResetting) { ui.netSharesHeader.innerText = "CALCULATING RESULTS..."; ui.netSharesHeader.classList.add("text-blue-400", "animate-pulse"); ui.btnUp.disabled = true; ui.btnDown.disabled = true; ui.qty.disabled = true; ui.pauseOverlay.classList.remove('hidden'); ui.statusText.innerText = "RESETTING"; ui.statusText.className = "text-blue-400"; if(ui.pauseText) { ui.pauseText.innerText = "CALCULATING RESULTS..."; ui.pauseText.className = "text-blue-400 font-bold text-xl"; } ui.timer.innerText = "Resetting..."; }
-            else if (data.isCancelled) { ui.netSharesHeader.innerText = "FRAME CANCELLED"; ui.netSharesHeader.classList.add("text-red-500"); ui.btnUp.disabled = true; ui.btnDown.disabled = true; ui.qty.disabled = true; ui.pauseOverlay.classList.remove('hidden'); ui.statusText.innerText = "CANCELLED"; ui.statusText.className = "text-red-500"; if(ui.pauseText) { ui.pauseText.innerText = "FRAME CANCELLED - funds refunded"; ui.pauseText.className = "text-red-500 font-bold text-xl"; } }
-            else if (data.isPaused) { ui.netSharesHeader.innerText = "MARKET PAUSED"; ui.netSharesHeader.classList.add("text-red-500"); ui.btnUp.disabled = true; ui.btnDown.disabled = true; ui.qty.disabled = true; ui.pauseOverlay.classList.remove('hidden'); ui.statusText.innerText = "PAUSED"; ui.statusText.className = "text-yellow-500"; ui.topStatus.className = "flex items-center gap-2 text-xs font-mono bg-black/40 px-3 py-2 rounded border border-yellow-900/50"; if(ui.pauseText) { ui.pauseText.innerText = "FRAME PAUSED"; ui.pauseText.className = "text-yellow-500 font-bold text-xl"; } }
-            else { if (state.targetEndTime && state.targetEndTime <= Date.now() + 500) { ui.netSharesHeader.innerText = "CALCULATING RESULTS..."; ui.netSharesHeader.classList.add("text-blue-400", "animate-pulse"); ui.btnUp.disabled = true; ui.btnDown.disabled = true; ui.qty.disabled = true; ui.pauseOverlay.classList.remove('hidden'); if(ui.pauseText) { ui.pauseText.innerText = "CALCULATING RESULTS..."; ui.pauseText.className = "text-blue-400 font-bold text-xl"; } } else { ui.netSharesHeader.innerText = "Net Shares Bought"; ui.netSharesHeader.classList.remove("text-red-500", "text-blue-400", "animate-pulse"); ui.btnUp.disabled = false; ui.btnDown.disabled = false; ui.qty.disabled = false; ui.pauseOverlay.classList.add('hidden'); } }
-
-            if (data.market) {
-                state.prices = { up: data.market.priceUp, down: data.market.priceDown }; if(data.market.changes) { formatChange(ui.up1m, data.market.changes.up1m); formatChange(ui.up5m, data.market.changes.up5m); formatChange(ui.down1m, data.market.changes.down1m); formatChange(ui.down5m, data.market.changes.down5m); }
-                const nU = Math.max(0, data.market.sharesUp-50), nD = Math.max(0, data.market.sharesDown-50); ui.lblSharesUp.innerText = nU.toFixed(0); ui.lblSharesDown.innerText = nD.toFixed(0); const total = nU + nD || 1; ui.barUp.style.width = `${(nU/total)*100}%`; ui.barDown.style.width = `${(nD/total)*100}%`; ui.lblPriceUp.innerText = state.prices.up.toFixed(3); ui.lblPriceDown.innerText = state.prices.down.toFixed(3);
+            // HANDLE 503 (INITIALIZING)
+            if(res.status === 503) {
+                 ui.statusText.innerText = "INITIALIZING"; 
+                 ui.statusText.className = "text-blue-400 animate-pulse";
+                 ui.topStatus.className = "flex items-center gap-2 text-xs font-mono bg-black/40 px-3 py-2 rounded border border-blue-900/50";
+                 return; 
             }
-            
-            ui.price.innerText = `$${data.price.toFixed(2)}`; const diff = data.price - data.openPrice; const color = diff >= 0 ? 'text-green-400' : 'text-red-500'; ui.change.innerHTML = `<span class="${color}">${diff>=0?'+':''}${diff.toFixed(2)} (${data.change.toFixed(2)}%)</span>`;
-            if(data.candleStartTime) { ui.frameStart.innerText = new Date(data.candleStartTime).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}); ui.frameEnd.innerText = new Date(data.candleEndTime).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}); state.targetEndTime = data.candleEndTime; }
-            if(data.currentVolume !== undefined) ui.currentPot.innerText = `${data.currentVolume.toFixed(3)} SOL`;
 
-            state.fullHistory = data.history || [];
+            if(!res.ok) throw new Error(res.statusText);
+            const data = await res.json();
             
-            if(data.platformStats) { 
-                ui.statGlobalVol.innerText = `${data.platformStats.totalVolume.toFixed(2)} SOL`; 
-                ui.statGlobalFees.innerText = `${data.platformStats.totalFees.toFixed(3)} SOL`; 
-                // FIX: Use toLocaleString for large ASDF numbers
-                if(ui.statGlobalASDF) ui.statGlobalASDF.innerText = Math.round(data.platformStats.totalASDF).toLocaleString() + " ASDF"; 
+            state.isOnline = true;
+            // UPDATE: Reset status display to default
+            ui.statusText.innerText = "ONLINE"; 
+            ui.statusText.className = "text-green-400";
+            ui.topStatus.className = "flex items-center gap-2 text-xs font-mono bg-black/40 px-3 py-2 rounded border border-green-900/50 transition-colors duration-500";
+            if(ui.lastUpdated && data.lastPriceTimestamp) ui.lastUpdated.innerText = `Price Data: ${new Date(data.lastPriceTimestamp).toLocaleTimeString()}`;
+            if(data.backendVersion) ui.backendVersion.innerText = `v${data.backendVersion}`;
+
+            // --- STATE SYNC ---
+            state.isResetting = data.isResetting;
+            state.isCancelled = data.isCancelled;
+
+            if (data.isResetting) {
+                ui.netSharesHeader.innerText = "CALCULATING RESULTS..."; ui.netSharesHeader.classList.add("text-blue-400", "animate-pulse"); ui.netSharesHeader.classList.remove("text-red-500");
+                // Disable buy buttons and show overlay
+                ui.pauseOverlay.classList.remove('hidden');
+                ui.statusText.innerText = "RESETTING"; ui.statusText.className = "text-blue-400";
+                if(ui.pauseText) { ui.pauseText.innerText = "CALCULATING RESULTS..."; ui.pauseText.className = "text-blue-400 font-bold text-xl"; }
+                ui.timer.innerText = "Resetting..."; // Immediate feedback
             }
-            if(data.uniqueUsers !== undefined) ui.frameUsers.innerText = data.uniqueUsers; if(data.totalLifetimeUsers) ui.globalLifetimeUsers.innerText = data.totalLifetimeUsers.toLocaleString(); if(data.totalWinnings !== undefined) ui.globalWinnings.innerText = `${data.totalWinnings.toFixed(2)} SOL`;
-            if (data.lastFramePot !== undefined) { const statusIcon = data.payoutQueueLength === 0 ? "✅" : "⏳"; ui.globalLastPayout.innerText = `${statusIcon} ${data.lastFramePot.toFixed(2)} SOL`; }
-            if (data.broadcast && data.broadcast.isActive && data.broadcast.message) { ui.broadcastContainer.classList.remove('hidden'); ui.broadcastText.innerText = data.broadcast.message; } else { ui.broadcastContainer.classList.add('hidden'); }
-            
-            // UPDATE: SENTIMENT UI (POLLING)
-            if (data.hourlySentiment) {
-                const sUp = data.hourlySentiment.up;
-                const sDown = data.hourlySentiment.down;
-                const sTotal = sUp + sDown || 1;
-                ui.valSentUp.innerText = sUp;
-                ui.valSentDown.innerText = sDown;
-                
-                // FIX: Progress Bar Calculation
-                const upPercent = sTotal > 0 ? (sUp / sTotal) * 100 : 50;
-                ui.sentBarFill.style.width = `${upPercent}%`;
-                
-                if (sUp > sDown) { ui.sentBarFill.style.backgroundColor = '#22c55e'; }
-                else if (sDown > sUp) { ui.sentBarFill.style.backgroundColor = '#ef4444'; }
-                else { ui.sentBarFill.style.backgroundColor = '#fb923c'; }
-
-                const now = Date.now();
-                if (data.hourlySentiment.nextReset > now) {
-                     const totalSeconds = Math.floor((data.hourlySentiment.nextReset - now) / 1000);
-                     const mins = Math.floor(totalSeconds / 60);
-                     const secs = totalSeconds % 60;
-                     ui.sentTimer.innerText = `Reset: ${mins}m ${secs}s`;
+            else if (data.isCancelled) {
+                ui.netSharesHeader.innerText = "FRAME CANCELLED"; ui.netSharesHeader.classList.add("text-red-500"); 
+                // Disable buy buttons and show overlay
+                ui.pauseOverlay.classList.remove('hidden');
+                ui.statusText.innerText = "CANCELLED"; ui.statusText.className = "text-red-500";
+                if(ui.pauseText) { ui.pauseText.innerText = "FRAME CANCELLED - funds refunded"; ui.pauseText.className = "text-red-500 font-bold text-xl"; }
+            }
+            else if (data.isPaused) {
+                ui.netSharesHeader.innerText = "MARKET PAUSED"; ui.netSharesHeader.classList.add("text-red-500"); 
+                // Disable buy buttons and show overlay
+                ui.pauseOverlay.classList.remove('hidden');
+                ui.statusText.innerText = "PAUSED"; ui.statusText.className = "text-yellow-500";
+                ui.topStatus.className = "flex items-center gap-2 text-xs font-mono bg-black/40 px-3 py-2 rounded border border-yellow-900/50";
+                if(ui.pauseText) { ui.pauseText.innerText = "FRAME PAUSED"; ui.pauseText.className = "text-yellow-500 font-bold text-xl"; }
+            } else {
+                // LOCAL LOCKDOWN CHECK
+                if (state.targetEndTime && state.targetEndTime <= Date.now() + 500) {
+                     // Local timer says closed, waiting for backend
+                     ui.netSharesHeader.innerText = "CALCULATING RESULTS..."; ui.netSharesHeader.classList.add("text-blue-400", "animate-pulse");
+                     // Disable buy buttons and show overlay
+                     ui.pauseOverlay.classList.remove('hidden');
+                     if(ui.pauseText) { ui.pauseText.innerText = "CALCULATING RESULTS..."; ui.pauseText.className = "text-blue-400 font-bold text-xl"; }
                 } else {
-                     ui.sentTimer.innerText = `Resetting...`;
+                     // OPEN
+                     ui.netSharesHeader.innerText = "Share Market"; ui.netSharesHeader.classList.remove("text-red-500", "text-blue-400", "animate-pulse");
+                     // Re-enable buy buttons and hide overlay
+                     ui.pauseOverlay.classList.add('hidden');
                 }
             }
 
-            // User Stats Processing
-            if(data.userStats) {
-                state.userLog = data.userStats.frameLog || {};
-                ui.statsContainer.classList.remove('hidden');
-                const totalGames = data.userStats.wins + data.userStats.losses;
-                const rate = totalGames > 0 ? ((data.userStats.wins/totalGames)*100).toFixed(0) : 0;
-                ui.statWin.innerText = `${rate}% (${data.userStats.wins}/${totalGames})`;
-                ui.statVol.innerText = `${data.userStats.totalSol.toFixed(3)} SOL`;
-
-                // Last Frame Performance
-                if (state.fullHistory.length > 0) {
-                    const last = state.fullHistory[0];
-                    if (last.endTime < Date.now() && state.userLog[last.id]) {
-                        const log = state.userLog[last.id];
-                        let res = log.result === 'WIN' ? `<span class="text-green-400">WIN</span>` : `<span class="text-red-400">LOSS</span>`;
-                        if (log.result === 'CANCELLED') res = `<span class="text-yellow-500">REFUNDED</span>`;
-                        else if (log.result === 'REFUNDED_ERROR') res = `<span class="text-yellow-500 font-bold">⚠️ ERR: REFUNDED</span>`;
-                        else if (log.payoutTx) res = `<a href="https://solscan.io/tx/${log.payoutTx}" target="_blank" class="text-green-400 underline">WIN (+${log.payoutAmount?.toFixed(3)})</a>`;
-                        else if (log.result === 'WIN') res = `<span class="text-green-600">WIN (Processing)</span>`;
-
-                        ui.lastFrameStats.innerHTML = `
-                            <div class="flex justify-between"><span>Vol:</span> <span>${last.totalSol.toFixed(2)} SOL</span></div>
-                            <div class="flex justify-between text-[10px] border-t border-white/10 pt-1 mt-1">
-                                <span class="text-green-400">UP: ${Math.round(log.upShares||0)}</span> <span class="text-red-400">DOWN: ${Math.round(log.downShares||0)}</span>
-                            </div>
-                            <div class="flex justify-between border-t border-white/10 mt-1 pt-1"><span>Result:</span> ${res}</div>
-                        `;
-                    } else {
-                        ui.lastFrameStats.innerHTML = `<span class="italic opacity-50">Waiting for close...</span>`;
-                    }
-                }
-            }
-
-            // Render UI components
-            renderHistory();
-            if(data.recentTrades) renderTicker(data.recentTrades);
-            if(data.leaderboard) renderLeaderboard(data.leaderboard);
-            if(data.lottery) updateLotteryUI(data.lottery);
-
-            // Active Position
-            if(data.activePosition) {
-                const uS = data.activePosition.upShares || 0;
-                const uV = data.activePosition.upSol || 0;
-                const dS = data.activePosition.downShares || 0;
-                const dV = data.activePosition.downSol || 0;
-                if (ui.statActUp) ui.statActUp.innerHTML = `${Math.round(uS)} <span class="text-gray-500">(${uV.toFixed(2)} SOL)</span>`;
-                if (ui.statActDown) ui.statActDown.innerHTML = `${Math.round(dS)} <span class="text-gray-500">(${dV.toFixed(2)} SOL)</span>`;
-
-                const pot = (data.currentVolume || 0) * 0.94;
-                let est = 0;
+            try {
                 if (data.market) {
-                    if (uS > dS) {
-                        const totalRealUp = Math.max(1, data.market.sharesUp - 50);
-                        est = (uS / totalRealUp) * pot;
-                    } else if (dS > uS) {
-                        const totalRealDown = Math.max(1, data.market.sharesDown - 50);
-                        est = (dS / totalRealDown) * pot;
+                    state.prices = { up: data.market.priceUp, down: data.market.priceDown };
+                    if(data.market.changes) { formatChange(ui.up1m, data.market.changes.up1m); formatChange(ui.up5m, data.market.changes.up5m); formatChange(ui.down1m, data.market.changes.down1m); formatChange(ui.down5m, data.market.changes.down5m); }
+                    const nU = Math.max(0, data.market.sharesUp-50), nD = Math.max(0, data.market.sharesDown-50);
+                    ui.lblSharesUp.innerText = nU.toFixed(0); ui.lblSharesDown.innerText = nD.toFixed(0);
+                    const total = nU + nD || 1;
+                    ui.barUp.style.width = `${(nU/total)*100}%`; ui.barDown.style.width = `${(nD/total)*100}%`;
+                    ui.lblPriceUp.innerText = state.prices.up.toFixed(3); ui.lblPriceDown.innerText = state.prices.down.toFixed(3);
+                }
+
+                ui.price.innerText = `$${data.price.toFixed(2)}`;
+                const diff = data.price - data.openPrice;
+                const color = diff >= 0 ? 'text-green-400' : 'text-red-500';
+                ui.change.innerHTML = `<span class="${color}">${diff>=0?'+':''}${diff.toFixed(2)} (${data.change.toFixed(2)}%)</span>`;
+
+                if(data.candleStartTime) {
+                     ui.frameStart.innerText = new Date(data.candleStartTime).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+                     ui.frameEnd.innerText = new Date(data.candleEndTime).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+                     state.targetEndTime = data.candleEndTime;
+                }
+
+                const ms = data.msUntilClose;
+                // ui.timer.innerText update moved to updateTimer()
+                if(data.currentVolume !== undefined) ui.currentPot.innerText = `${data.currentVolume.toFixed(3)} SOL`;
+
+                state.fullHistory = data.history || [];
+
+                // UPDATE: Fill new stats fields with Fallbacks
+                if(data.platformStats) {
+                    // RESTORED OLD STATS (Fixes Ghost Element Bug)
+                    // Using || 0 ensures no "undefined" or "NaN" if data is fresh
+                    if (ui.statGlobalVol) ui.statGlobalVol.innerText = `${(data.platformStats.totalVolume || 0).toFixed(2)} SOL`;
+                    if (ui.statGlobalFees) ui.statGlobalFees.innerText = `${(data.platformStats.totalFees || 0).toFixed(3)} SOL`;
+                    if (ui.statGlobalASDF) ui.statGlobalASDF.innerText = Math.round(data.platformStats.totalASDF || 0).toLocaleString() + " ASDF";
+                }
+
+                // New Fields
+                if (data.uniqueUsers !== undefined) ui.frameUsers.innerText = data.uniqueUsers;
+                if (data.totalLifetimeUsers) ui.globalLifetimeUsers.innerText = data.totalLifetimeUsers.toLocaleString();
+                if (data.totalWinnings !== undefined) ui.globalWinnings.innerText = `${data.totalWinnings.toFixed(2)} SOL`;
+
+                if (data.lastFramePot !== undefined) {
+                    const statusIcon = data.payoutQueueLength === 0 ? "✅" : "⏳";
+                    // Using innerText preserves the styling of the anchor tag
+                    ui.globalLastPayout.innerText = `${statusIcon} ${data.lastFramePot.toFixed(2)} SOL`;
+                }
+
+                if (data.broadcast && data.broadcast.isActive && data.broadcast.message) {
+                    ui.broadcastContainer.classList.remove('hidden');
+                    ui.broadcastText.innerText = data.broadcast.message;
+                } else {
+                    ui.broadcastContainer.classList.add('hidden');
+                }
+
+                // RE-ADD LEADERBOARD LOGIC - ENSURE IT CALLS
+                if(data.leaderboard) renderLeaderboard(data.leaderboard);
+                if(data.recentTrades) renderTicker(data.recentTrades);
+
+                // Lottery UI Update (from feature branch)
+                if(data.lottery) updateLotteryUI(data.lottery);
+
+                // UPDATE: SENTIMENT UI (POLLING)
+                if (data.hourlySentiment) {
+                    const sUp = data.hourlySentiment.up;
+                    const sDown = data.hourlySentiment.down;
+                    const sTotal = sUp + sDown || 1;
+                    ui.valSentUp.innerText = sUp;
+                    ui.valSentDown.innerText = sDown;
+
+                    // FIX: Progress Bar Calculation
+                    const upPercent = sTotal > 0 ? (sUp / sTotal) * 100 : 50;
+                    ui.sentBarFill.style.width = `${upPercent}%`;
+
+                    if (sUp > sDown) { ui.sentBarFill.style.backgroundColor = '#22c55e'; }
+                    else if (sDown > sUp) { ui.sentBarFill.style.backgroundColor = '#ef4444'; }
+                    else { ui.sentBarFill.style.backgroundColor = '#fb923c'; }
+
+                    // Calc Time
+                    const now = Date.now();
+                    if (data.hourlySentiment.nextReset > now) {
+                         const totalSeconds = Math.floor((data.hourlySentiment.nextReset - now) / 1000);
+                         const mins = Math.floor(totalSeconds / 60); // Updated to min only for hourly/daily
+                         const hours = Math.floor(mins / 60);
+                         const displayMins = mins % 60;
+                         ui.sentTimer.innerText = `Reset: ${hours}h ${displayMins}m`;
+                    } else {
+                         ui.sentTimer.innerText = `Resetting...`;
                     }
                 }
-                ui.statPayout.innerText = est.toFixed(3) + " SOL";
-            }
 
-            // Image Population
-            if (state.images.sentUp && ui.imgSentUp) ui.imgSentUp.src = state.images.sentUp;
-            if (state.images.sentDown && ui.imgSentDown) ui.imgSentDown.src = state.images.sentDown;
-        } catch(e) { console.error(e); state.isOnline = false; if(ui.topStatus) ui.topStatus.className = "flex items-center gap-2 text-xs font-mono bg-black/40 px-3 py-2 rounded border border-red-900/50 transition-colors duration-500"; if(ui.statusText) { ui.statusText.innerText = "OFFLINE"; ui.statusText.className = "text-red-500"; } } 
-        finally { const jitter = Math.floor(Math.random() * 400); pollTimeout = setTimeout(poll, 2000 + jitter); }
+                // FIX: Image Population
+                if (state.images.sentUp) ui.imgSentUp.src = state.images.sentUp; else ui.imgSentUp.style.display='none';
+                if (state.images.sentDown) ui.imgSentDown.src = state.images.sentDown; else ui.imgSentDown.style.display='none';
+
+
+                if(data.userStats) {
+                    state.userLog = data.userStats.frameLog || {};
+                    ui.statsContainer.classList.remove('hidden');
+                    const total = data.userStats.wins + data.userStats.losses;
+                    const rate = total > 0 ? ((data.userStats.wins/total)*100).toFixed(0) : 0;
+                    ui.statWin.innerText = `${rate}% (${data.userStats.wins}/${total})`;
+                    ui.statVol.innerText = `${data.userStats.totalSol.toFixed(3)} SOL`;
+
+                    // LAST FRAME PERF (Check if Closed)
+                    if (state.fullHistory.length > 0) {
+                        const last = state.fullHistory[0];
+                        const nowTime = Date.now();
+                        if (last.endTime < nowTime && state.userLog[last.id]) {
+                             const log = state.userLog[last.id];
+                             let res = log.result === 'WIN' ? `<span class="text-green-400">WIN</span>` : `<span class="text-red-400">LOSS</span>`;
+                             if (log.result === 'CANCELLED') res = `<span class="text-yellow-500">REFUNDED</span>`;
+                             // UPDATE: Check for Refunded Error
+                             if (log.result === 'REFUNDED_ERROR') res = `<span class="text-yellow-500 font-bold">⚠️ REFUNDED</span>`;
+
+                             // TEXT UPDATE
+                             // UPDATE: Change "Vol" to "My Wager"
+                             ui.lastFrameStats.innerHTML = `
+                                <div class="flex justify-between"><span>My Wager:</span> <span>${(log.wagered || 0).toFixed(3)} SOL</span></div>
+                                <div class="flex justify-between text-[10px] border-t border-white/10 pt-1 mt-1">
+                                    <span class="text-green-400">UP: ${Math.round(log.upShares||0)}</span> <span class="text-red-400">DOWN: ${Math.round(log.downShares||0)}</span>
+                                </div>
+                                <div class="flex justify-between border-t border-white/10 mt-1 pt-1"><span>Result:</span> ${res}</div>
+                             `;
+
+                             // IMAGE UPDATE removed by request
+
+                        } else {
+                            // FIX: If user is connected but hasn't played or frame is active/pending close
+                            ui.lastFrameStats.innerHTML = `<span class="italic opacity-50">Waiting for close...</span>`;
+                        }
+                    } else {
+                         // User is connected, but no history data yet
+                         ui.lastFrameStats.innerHTML = `<span class="italic opacity-50">Waiting for first game...</span>`;
+                    }
+                }
+                renderHistory();
+                // renderLeaderboard call is handled above
+                if(data.recentTrades) renderTicker(data.recentTrades);
+
+                if(data.activePosition) {
+                    const uS = data.activePosition.upShares || 0;
+                    const uV = data.activePosition.upSol || 0;
+                    const dS = data.activePosition.downShares || 0;
+                    const dV = data.activePosition.downSol || 0;
+
+                    // CORRECTED FORMAT: Assign Shares and SOL to their respective, mapped elements
+                    if (ui.statActUp) ui.statActUp.innerText = Math.round(uS);
+                    if (ui.statActUpSol) ui.statActUpSol.innerText = `(${uV.toFixed(2)} SOL)`;
+
+                    if (ui.statActDown) ui.statActDown.innerText = Math.round(dS);
+                    if (ui.statActDownSol) ui.statActDownSol.innerText = `(${dV.toFixed(2)} SOL)`;
+
+                    const pot = (data.currentVolume || 0) * 0.94;
+                    let est = 0;
+                    if (data.market) {
+                        if (uS > dS) {
+                            const totalRealUp = Math.max(1, data.market.sharesUp - 50);
+                            est = (uS / totalRealUp) * pot;
+                        } else if (dS > uS) {
+                            const totalRealDown = Math.max(1, data.market.sharesDown - 50);
+                            est = (dS / totalRealDown) * pot;
+                        }
+                    }
+                    ui.statPayout.innerText = est.toFixed(3) + " SOL";
+                }
+            } catch(e) { console.log("Stats Render Error", e); }
+
+            // CRUCIAL: Re-run costs update after new market data (prices/status) is fetched
+            updateCosts();
+
+        } catch(e) {
+            console.error(e);
+            state.isOnline = false;
+            // Removed custom messaging here to let the status indicator default
+            if(ui.topStatus) ui.topStatus.className = "flex items-center gap-2 text-xs font-mono bg-black/40 px-3 py-2 rounded border border-red-900/50 transition-colors duration-500";
+            if(ui.statusText) { ui.statusText.innerText = "OFFLINE"; ui.statusText.className = "text-red-500"; }
+            updateCosts(); // Still need to run this to handle disabling if offline
+        } finally {
+            // Recursive polling with Jitter (0-400ms)
+            const jitter = Math.floor(Math.random() * 400);
+            pollTimeout = setTimeout(poll, 2000 + jitter);
+        }
     }
 
     async function buy(dir) {
-        if (state.targetEndTime && state.targetEndTime <= Date.now() + 500) { alert("Market has closed. Calculating results."); return; }
+
+        // LOCAL LOCKDOWN
+
+        if (state.targetEndTime && state.targetEndTime <= Date.now() + 500) {
+
+            alert("Market has closed. Calculating results.");
+            return;
+
+        }
+
         if(!state.isOnline) return alert("System Offline");
-        const qty = parseInt(ui.qty.value); const cost = qty * (dir==='UP'?state.prices.up:state.prices.down); const btn = dir==='UP'?ui.btnUp:ui.btnDown; const old = btn.innerHTML; btn.innerHTML = "SIGNING..."; btn.disabled = true;
+
+        const qty = parseInt(ui.qty.value);
+
+        const cost = qty * (dir==='UP'?state.prices.up:state.prices.down);
+        
+        // FINAL VALIDATION CHECK
+        if (cost > state.solBalance) {
+            alert(`Insufficient funds. Cost is ${cost.toFixed(4)} SOL but you only have ${state.solBalance.toFixed(4)} SOL.`);
+            return;
+        }
+
+        const btn = dir==='UP'?ui.btnUp:ui.btnDown;
+
+        const old = btn.innerHTML;
+
+        btn.innerHTML = "SIGNING..."; btn.disabled = true;
+
         try {
-            const tx = new Transaction(); const { blockhash } = await state.conn.getLatestBlockhash(); tx.recentBlockhash = blockhash; tx.feePayer = state.pubKey;
+
+            const tx = new Transaction();
+
+            const { blockhash } = await state.conn.getLatestBlockhash();
+
+            tx.recentBlockhash = blockhash; tx.feePayer = state.pubKey;
+
             tx.add(SystemProgram.transfer({ fromPubkey: state.pubKey, toPubkey: new PublicKey(HOUSE_PUBKEY), lamports: Math.round(cost * solanaWeb3.LAMPORTS_PER_SOL) }));
-            const sig = await window.solana.signAndSendTransaction(tx); btn.innerHTML = "VERIFYING..."; await state.conn.confirmTransaction(sig.signature, 'confirmed');
+
+            const sig = await window.solana.signAndSendTransaction(tx);
+
+            btn.innerHTML = "VERIFYING...";
+
+            await state.conn.confirmTransaction(sig.signature, 'confirmed');
+
             const res = await fetch(`${API_URL}/verify-bet`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ signature: sig.signature, direction: dir, userPubKey: state.pubKey.toString() }) });
-            const d = await res.json(); if(d.success) { alert(`Bought ${Math.round(d.shares)} shares!`); refreshBalance(); } else alert(d.error);
-        } catch(e) { console.error(e); alert("Tx Failed"); } finally { btn.innerHTML = old; btn.disabled = false; }
+
+            const d = await res.json();
+
+            if(d.success) { 
+                alert(`Bought ${Math.round(d.shares)} shares!`);
+                refreshBalance(); 
+            } else { 
+                alert(d.error);
+            }
+
+        } catch(e) { 
+            console.error(e); 
+            alert("Tx Failed");
+        } finally { btn.innerHTML = old; btn.disabled = false; updateCosts(); } // Re-enable and update costs/disable state
+
     }
 </script>
