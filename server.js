@@ -19,6 +19,12 @@ const lotteryMutex = new Mutex();
 app.set('trust proxy', 1);
 app.use(cors({ origin: '*', methods: ['GET', 'POST'] }));
 app.use(express.json());
+app.use(express.static(__dirname));
+
+// Serve frontend
+app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'frontend.html')));
+app.get('/control', (req, res) => res.sendFile(path.join(__dirname, 'control_panel.html')));
+app.get('/status', (req, res) => res.sendFile(path.join(__dirname, 'status_monitor_widget.html')));
 
 const PORT = process.env.PORT || 3000;
 
@@ -698,12 +704,93 @@ async function checkLotteryEligibility(userPubKey) {
     };
 }
 
-function calculateTickets(user) {
-    if (!user.lottery || !user.lottery.isEligible) return { base: 0, effective: 0, multiplier: 0 };
+// Get the timestamp of the first ASDF transaction for a wallet using Helius API
+// Uses getTransactionsForAddress with sortOrder: "asc" to get oldest first
+async function getFirstASDF_Transaction(walletAddress) {
+    try {
+        // Get user's ASDF token account
+        const connection = new Connection(SOLANA_NETWORK);
+        const walletPubKey = new PublicKey(walletAddress);
+        const mintPubKey = new PublicKey(ASDF_MINT);
 
-    const weeksHeld = Math.floor(
-        (Date.now() - (user.lottery.firstSeenHolding || Date.now())) / (7 * 24 * 60 * 60 * 1000)
-    );
+        // Find the associated token account for this wallet
+        const tokenAccounts = await connection.getTokenAccountsByOwner(walletPubKey, { mint: mintPubKey });
+
+        if (tokenAccounts.value.length === 0) {
+            return null; // No ASDF token account
+        }
+
+        const tokenAccountAddress = tokenAccounts.value[0].pubkey.toBase58();
+
+        // Use Helius getTransactionsForAddress with sortOrder: "asc" to get oldest first
+        const response = await axios.post(
+            `https://mainnet.helius-rpc.com/?api-key=${process.env.HELIUS_API_KEY}`,
+            {
+                jsonrpc: "2.0",
+                id: "get-first-tx",
+                method: "getTransactionsForAddress",
+                params: [
+                    tokenAccountAddress,
+                    {
+                        sortOrder: "asc",  // Oldest first
+                        limit: 1
+                    }
+                ]
+            },
+            { timeout: 15000 }
+        );
+
+        // Handle response structure: result.data[] for getTransactionsForAddress
+        const resultData = response.data?.result?.data || response.data?.result;
+
+        if (resultData && resultData.length > 0) {
+            const firstTx = resultData[0];
+
+            // blockTime can be in the transaction object directly or we need to get it from slot
+            if (firstTx.blockTime) {
+                const timestamp = firstTx.blockTime * 1000;
+                console.log(`> [LOTTERY] First ASDF tx for ${walletAddress.slice(0, 8)}...: ${new Date(timestamp).toISOString()}`);
+                return timestamp;
+            }
+
+            // If no blockTime, try to get block time from the slot
+            if (firstTx.slot) {
+                try {
+                    const blockTimeResponse = await axios.post(
+                        SOLANA_NETWORK,
+                        {
+                            jsonrpc: "2.0",
+                            id: "get-block-time",
+                            method: "getBlockTime",
+                            params: [firstTx.slot]
+                        },
+                        { timeout: 10000 }
+                    );
+
+                    if (blockTimeResponse.data?.result) {
+                        const timestamp = blockTimeResponse.data.result * 1000;
+                        console.log(`> [LOTTERY] First ASDF tx for ${walletAddress.slice(0, 8)}... (via slot): ${new Date(timestamp).toISOString()}`);
+                        return timestamp;
+                    }
+                } catch (slotErr) {
+                    console.error(`> [LOTTERY] Error getting block time for slot:`, slotErr.message);
+                }
+            }
+        }
+
+        return null;
+    } catch (e) {
+        console.error(`> [LOTTERY] Error getting first ASDF transaction:`, e.message);
+        return null;
+    }
+}
+
+function calculateTickets(user) {
+    if (!user.lottery || !user.lottery.isEligible) return { base: 0, effective: 0, multiplier: 0, activeDays: 0 };
+
+    // Use weeksHolding directly from user data (already calculated in updateUserLotteryStatus)
+    // This avoids the fallback Date.now() issue
+    const weeksHeld = user.lottery.weeksHolding || 0;
 
     const baseTickets = Math.min(1 + weeksHeld, LOTTERY_CONFIG.MAX_TICKETS);
     const activityDays = user.lottery.activityDays || [];
@@ -725,6 +812,7 @@ async function updateUserLotteryStatus(userPubKey) {
     if (!userData.lottery) {
         userData.lottery = {
             firstSeenHolding: null,
+            firstSeenHoldingSource: null, // 'onchain' or 'cached'
             lastBalanceCheck: Date.now(),
             currentBalance: eligibility.balance,
             weeksHolding: 0,
@@ -737,22 +825,30 @@ async function updateUserLotteryStatus(userPubKey) {
     // Update balance and eligibility
     userData.lottery.currentBalance = eligibility.balance;
     userData.lottery.lastBalanceCheck = Date.now();
+    userData.lottery.isEligible = eligibility.isEligible;
 
-    if (eligibility.isEligible) {
-        // If newly eligible, set firstSeenHolding
-        if (!userData.lottery.firstSeenHolding) {
-            userData.lottery.firstSeenHolding = Date.now();
+    // Fetch on-chain first transaction if we don't have it cached
+    // Only fetch once, then cache the result
+    if (!userData.lottery.firstSeenHolding || userData.lottery.firstSeenHoldingSource !== 'onchain') {
+        const onchainFirstTx = await getFirstASDF_Transaction(userPubKey);
+        if (onchainFirstTx) {
+            userData.lottery.firstSeenHolding = onchainFirstTx;
+            userData.lottery.firstSeenHoldingSource = 'onchain';
+            console.log(`> [LOTTERY] Set on-chain firstSeenHolding for ${userPubKey.slice(0, 8)}...: ${new Date(onchainFirstTx).toISOString()}`);
         }
-        userData.lottery.isEligible = true;
+    }
+
+    // Calculate weeks holding based on firstSeenHolding (if available)
+    if (userData.lottery.firstSeenHolding) {
         userData.lottery.weeksHolding = Math.floor(
             (Date.now() - userData.lottery.firstSeenHolding) / (7 * 24 * 60 * 60 * 1000)
         );
     } else {
-        // Lost eligibility - reset holding duration
-        userData.lottery.firstSeenHolding = null;
         userData.lottery.weeksHolding = 0;
-        userData.lottery.isEligible = false;
     }
+
+    // Note: We do NOT reset firstSeenHolding on temporary eligibility loss
+    // The on-chain holding duration is preserved even if balance drops temporarily
 
     await saveUser(userPubKey, userData);
     return userData;
