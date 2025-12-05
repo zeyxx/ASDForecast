@@ -5,7 +5,7 @@ const { Connection, PublicKey } = require('@solana/web3.js');
 
 const HELIUS_URL = `https://mainnet.helius-rpc.com/?api-key=${process.env.HELIUS_API_KEY}`;
 const PUMPSWAP_PROGRAM = 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA';
-const ASDF_MINT = '2ezxCB7S2TdqJ1uLPD54KZnPB8RMvG2oSYNQLUmCpump';
+const ASDF_MINT = '9zB5wRarXMj86MymwLumSKA1Dx35zPqqKfcZtK1Spump';
 const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 
 async function findPool() {

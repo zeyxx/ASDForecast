@@ -3,7 +3,7 @@ require('dotenv').config({ override: true });
 const axios = require('axios');
 
 const HELIUS_URL = `https://mainnet.helius-rpc.com/?api-key=${process.env.HELIUS_API_KEY}`;
-const ASDF_MINT = '2ezxCB7S2TdqJ1uLPD54KZnPB8RMvG2oSYNQLUmCpump';
+const ASDF_MINT = '9zB5wRarXMj86MymwLumSKA1Dx35zPqqKfcZtK1Spump';
 
 // Known DEX program IDs
 const DEX_PROGRAMS = {
