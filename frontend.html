@@ -388,6 +388,104 @@
             </div>
         </div>
 
+        <!-- REFERRAL SECTION (552 SYMMETRY) -->
+        <div class="panel p-6 bg-black/40 mb-8 border-2 border-cyan-600">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="text-lg font-bold text-cyan-400">🔗 Referral Rewards</h3>
+                <span class="text-xs font-mono bg-cyan-900/30 px-2 py-1 rounded text-cyan-300">Earn ASDF</span>
+            </div>
+
+            <!-- Referral Code Section -->
+            <div class="bg-gradient-to-r from-cyan-900/30 to-blue-900/30 p-4 rounded border border-cyan-600/50 mb-4">
+                <div class="flex justify-between items-center mb-2">
+                    <span class="text-sm font-bold text-cyan-400">📋 Your Referral Code</span>
+                    <span id="referral-code-status" class="text-xs font-mono text-gray-400">Connect wallet</span>
+                </div>
+                <div class="flex gap-2">
+                    <input type="text" id="referral-code-display" readonly
+                        class="flex-1 bg-black/50 border border-cyan-900/50 rounded px-3 py-2 font-mono text-lg text-cyan-300 text-center"
+                        value="--------" placeholder="--------">
+                    <button onclick="window.copyReferralCode()" id="copy-code-btn"
+                        class="px-4 py-2 bg-cyan-700 hover:bg-cyan-600 text-white font-bold rounded border border-cyan-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        disabled>Copy</button>
+                </div>
+                <div id="referral-code-message" class="text-center mt-2 text-xs font-mono text-gray-500">
+                    Hold 55,200+ ASDF to create your referral code
+                </div>
+            </div>
+
+            <!-- Pending Rewards -->
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                <div class="bg-black/30 p-4 rounded border border-cyan-900/50 text-center">
+                    <span class="block text-[10px] text-cyan-500 font-mono uppercase mb-1">Pending Rewards</span>
+                    <span id="referral-pending-asdf" class="text-2xl font-mono font-bold text-cyan-400">0</span>
+                    <span class="text-xs text-gray-400 block">ASDF</span>
+                </div>
+                <div class="bg-black/30 p-4 rounded border border-cyan-900/50 text-center">
+                    <span class="block text-[10px] text-cyan-500 font-mono uppercase mb-1">Your ASDF Balance</span>
+                    <span id="referral-your-balance" class="text-2xl font-mono font-bold text-white">0</span>
+                    <span class="text-xs text-gray-400 block">ASDF</span>
+                </div>
+                <div class="bg-black/30 p-4 rounded border border-cyan-900/50 text-center">
+                    <span class="block text-[10px] text-cyan-500 font-mono uppercase mb-1">Claimable Now</span>
+                    <span id="referral-claimable" class="text-2xl font-mono font-bold text-green-400">0</span>
+                    <span class="text-xs text-gray-400 block">ASDF</span>
+                </div>
+            </div>
+
+            <!-- Claim Button -->
+            <div class="text-center mb-4">
+                <button onclick="window.claimReferralRewards()" id="claim-btn"
+                    class="px-8 py-3 bg-gradient-to-r from-green-700 to-cyan-700 hover:from-green-600 hover:to-cyan-600 text-white font-bold text-lg rounded-lg border-2 border-green-500 transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:from-gray-700 disabled:to-gray-700 disabled:border-gray-500"
+                    disabled>
+                    <span id="claim-btn-text">Claim ASDF Rewards</span>
+                </button>
+                <div id="claim-message" class="mt-2 text-xs font-mono text-gray-500"></div>
+            </div>
+
+            <!-- Stats Grid -->
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-2 mb-4 text-xs font-mono">
+                <div class="bg-black/20 p-2 rounded text-center">
+                    <span class="text-gray-500 block">Referred Users</span>
+                    <span id="referral-users-count" class="text-cyan-400">0</span>
+                </div>
+                <div class="bg-black/20 p-2 rounded text-center">
+                    <span class="text-gray-500 block">Volume Generated</span>
+                    <span id="referral-volume" class="text-cyan-400">0 SOL</span>
+                </div>
+                <div class="bg-black/20 p-2 rounded text-center">
+                    <span class="text-gray-500 block">Total Claimed</span>
+                    <span id="referral-total-claimed" class="text-green-400">0 ASDF</span>
+                </div>
+                <div class="bg-black/20 p-2 rounded text-center">
+                    <span class="text-gray-500 block">Referred By</span>
+                    <span id="referral-referred-by" class="text-gray-400">None</span>
+                </div>
+            </div>
+
+            <!-- Register with Code -->
+            <div id="register-section" class="bg-cyan-900/20 p-3 rounded border border-cyan-900/30 mb-4">
+                <div class="text-sm font-bold text-cyan-400 mb-2">Have a referral code?</div>
+                <div class="flex gap-2">
+                    <input type="text" id="register-code-input" maxlength="8"
+                        class="flex-1 bg-black/50 border border-cyan-900/50 rounded px-3 py-2 font-mono text-center uppercase"
+                        placeholder="ENTER CODE">
+                    <button onclick="window.registerReferralCode()" id="register-btn"
+                        class="px-4 py-2 bg-cyan-700 hover:bg-cyan-600 text-white font-bold rounded border border-cyan-500 transition-colors disabled:opacity-50"
+                        disabled>Register</button>
+                </div>
+                <div id="register-message" class="mt-2 text-xs font-mono text-center"></div>
+            </div>
+
+            <!-- How it works -->
+            <div class="text-[10px] text-gray-500 font-mono">
+                <strong class="text-cyan-500">552 SYMMETRY:</strong>
+                <span class="text-cyan-300">You earn 0.552%</span> of your bets in ASDF.
+                <span class="text-blue-300">Referrer earns 0.448%</span> of your bets.
+                <strong class="text-yellow-400">Flywheel:</strong> You can only claim up to your ASDF balance. Hold more = claim more!
+            </div>
+        </div>
+
         <!-- ABOUT SECTION (FULLY EXPANDED) -->
         <div class="panel p-6 bg-black/40">
             <button onclick="window.toggleAbout()" class="w-full text-left flex justify-between items-center text-orange-400 hover:text-white transition-colors"><span class="font-bold text-lg font-mono">>> METHODOLOGY & MECHANICS</span><span id="about-icon">[ + ]</span></button>
@@ -552,7 +650,26 @@
             publicHistorySearch: document.getElementById('public-history-search'),
             // SENTIMENT IMAGES
             imgSentUp: document.getElementById('img-sent-up'),
-            imgSentDown: document.getElementById('img-sent-down')
+            imgSentDown: document.getElementById('img-sent-down'),
+            // REFERRAL UI ELEMENTS
+            referralCodeDisplay: document.getElementById('referral-code-display'),
+            referralCodeStatus: document.getElementById('referral-code-status'),
+            referralCodeMessage: document.getElementById('referral-code-message'),
+            copyCodeBtn: document.getElementById('copy-code-btn'),
+            referralPendingAsdf: document.getElementById('referral-pending-asdf'),
+            referralYourBalance: document.getElementById('referral-your-balance'),
+            referralClaimable: document.getElementById('referral-claimable'),
+            claimBtn: document.getElementById('claim-btn'),
+            claimBtnText: document.getElementById('claim-btn-text'),
+            claimMessage: document.getElementById('claim-message'),
+            referralUsersCount: document.getElementById('referral-users-count'),
+            referralVolume: document.getElementById('referral-volume'),
+            referralTotalClaimed: document.getElementById('referral-total-claimed'),
+            referralReferredBy: document.getElementById('referral-referred-by'),
+            registerSection: document.getElementById('register-section'),
+            registerCodeInput: document.getElementById('register-code-input'),
+            registerBtn: document.getElementById('register-btn'),
+            registerMessage: document.getElementById('register-message')
         };
 
         if(ui.btnInc) ui.btnInc.onclick = () => adjustQty(1);
@@ -696,8 +813,8 @@
     };
 
     async function connect() { try { await window.solana.connect(); onConnect(await window.solana.connect()); } catch(e){} }
-    async function disconnectWallet() { if(window.solana) await window.solana.disconnect(); state.pubKey = null; state.userLog = {}; ui.connect.innerText = "Connect Phantom"; ui.form.classList.add('opacity-50', 'pointer-events-none'); ui.disconnect.classList.add('hidden'); ui.bal.innerText = "0.0000"; ui.statsContainer.classList.add('hidden'); renderHistory(); if(lotteryEligibilityInterval) { clearInterval(lotteryEligibilityInterval); lotteryEligibilityInterval = null; } fetchLotteryEligibility(); }
-    function onConnect(resp) { state.pubKey = resp.publicKey; ui.connect.innerText = `👤 ${resp.publicKey.toString().slice(0,4)}...`; ui.form.classList.remove('opacity-50', 'pointer-events-none'); ui.disconnect.classList.remove('hidden'); refreshBalance(); poll(); startLotteryEligibilityPolling(); }
+    async function disconnectWallet() { if(window.solana) await window.solana.disconnect(); state.pubKey = null; state.userLog = {}; ui.connect.innerText = "Connect Phantom"; ui.form.classList.add('opacity-50', 'pointer-events-none'); ui.disconnect.classList.add('hidden'); ui.bal.innerText = "0.0000"; ui.statsContainer.classList.add('hidden'); renderHistory(); if(lotteryEligibilityInterval) { clearInterval(lotteryEligibilityInterval); lotteryEligibilityInterval = null; } fetchLotteryEligibility(); if(referralStatsInterval) { clearInterval(referralStatsInterval); referralStatsInterval = null; } fetchReferralStats(); }
+    function onConnect(resp) { state.pubKey = resp.publicKey; ui.connect.innerText = `👤 ${resp.publicKey.toString().slice(0,4)}...`; ui.form.classList.remove('opacity-50', 'pointer-events-none'); ui.disconnect.classList.remove('hidden'); refreshBalance(); poll(); startLotteryEligibilityPolling(); startReferralPolling(); }
     async function refreshBalance() { if(state.pubKey) { const bal = await state.conn.getBalance(state.pubKey); ui.bal.innerText = (bal/1e9).toFixed(4); } }
     function adjustQty(n) { if(ui.qty.disabled) return; let v = parseInt(ui.qty.value) + n; if(v < 1) v = 1; ui.qty.value = Math.floor(v); updateCosts(); }
     function updateCosts() { const q = parseInt(ui.qty.value) || 0; if(state.prices.up && ui.costUp) { ui.costUp.innerText = (q * state.prices.up).toFixed(3) + " SOL"; ui.costDown.innerText = (q * state.prices.down).toFixed(3) + " SOL"; } }
@@ -889,6 +1006,237 @@
         fetchLotteryEligibility();
         lotteryEligibilityInterval = setInterval(fetchLotteryEligibility, 60000);
     }
+
+    // ==================== REFERRAL SYSTEM ====================
+    let referralStatsInterval = null;
+
+    async function fetchReferralStats() {
+        if (!state.pubKey) {
+            // Reset UI to disconnected state
+            if (ui.referralCodeDisplay) ui.referralCodeDisplay.value = '--------';
+            if (ui.referralCodeStatus) ui.referralCodeStatus.innerText = 'Connect wallet';
+            if (ui.referralCodeMessage) ui.referralCodeMessage.innerText = 'Hold 55,200+ ASDF to create your referral code';
+            if (ui.copyCodeBtn) ui.copyCodeBtn.disabled = true;
+            if (ui.referralPendingAsdf) ui.referralPendingAsdf.innerText = '0';
+            if (ui.referralYourBalance) ui.referralYourBalance.innerText = '0';
+            if (ui.referralClaimable) ui.referralClaimable.innerText = '0';
+            if (ui.claimBtn) ui.claimBtn.disabled = true;
+            if (ui.registerBtn) ui.registerBtn.disabled = true;
+            return;
+        }
+
+        try {
+            const res = await fetch(`${API_URL}/referral/stats?user=${state.pubKey.toString()}`);
+            if (!res.ok) throw new Error('Failed to fetch referral stats');
+            const data = await res.json();
+
+            // Extract data from nested structure
+            const asdfBalance = data.claim?.userASDF_Balance || 0;
+            const canCreateCode = asdfBalance >= (data.minASDF || 55200);
+
+            // Update code section
+            if (data.referralCode) {
+                ui.referralCodeDisplay.value = data.referralCode;
+                ui.referralCodeStatus.innerText = '✅ Active';
+                ui.referralCodeStatus.className = 'text-xs font-mono text-green-400';
+                ui.referralCodeMessage.innerText = `Share to earn 0.448% of referrals' bets`;
+                ui.copyCodeBtn.disabled = false;
+            } else if (canCreateCode) {
+                ui.referralCodeDisplay.value = '--------';
+                ui.referralCodeStatus.innerText = 'Click to create';
+                ui.referralCodeStatus.className = 'text-xs font-mono text-yellow-400';
+                ui.referralCodeMessage.innerHTML = `<button onclick="window.createReferralCode()" class="underline text-cyan-400 hover:text-cyan-300">Click here to create your referral code</button>`;
+                ui.copyCodeBtn.disabled = true;
+            } else {
+                ui.referralCodeDisplay.value = '--------';
+                ui.referralCodeStatus.innerText = 'Need 55,200 ASDF';
+                ui.referralCodeStatus.className = 'text-xs font-mono text-red-400';
+                const needed = (data.minASDF || 55200) - asdfBalance;
+                ui.referralCodeMessage.innerText = `Hold ${Math.ceil(needed).toLocaleString()} more ASDF to unlock`;
+                ui.copyCodeBtn.disabled = true;
+            }
+
+            // Update rewards display (from nested structure)
+            const pendingAsdf = data.pending?.totalASDF || 0;
+            const claimable = data.claim?.claimableASDF || 0;
+
+            ui.referralPendingAsdf.innerText = pendingAsdf.toLocaleString();
+            ui.referralYourBalance.innerText = asdfBalance.toLocaleString();
+            ui.referralClaimable.innerText = claimable.toLocaleString();
+
+            // Update claim button
+            if (claimable > 0) {
+                ui.claimBtn.disabled = false;
+                ui.claimBtnText.innerText = `Claim ${claimable.toLocaleString()} ASDF`;
+                ui.claimMessage.innerText = '';
+            } else if (pendingAsdf > 0 && asdfBalance < pendingAsdf) {
+                ui.claimBtn.disabled = true;
+                ui.claimBtnText.innerText = 'Claim ASDF Rewards';
+                ui.claimMessage.innerHTML = `<span class="text-yellow-400">Hold more ASDF to claim! Need: ${(pendingAsdf - asdfBalance).toLocaleString()} more</span>`;
+            } else {
+                ui.claimBtn.disabled = true;
+                ui.claimBtnText.innerText = 'Claim ASDF Rewards';
+                ui.claimMessage.innerText = 'No pending rewards';
+            }
+
+            // Update stats
+            ui.referralUsersCount.innerText = data.referredUsers || 0;
+            ui.referralVolume.innerText = `${(data.totalVolumeGenerated || 0).toFixed(2)} SOL`;
+            ui.referralTotalClaimed.innerText = `${(data.pending?.totalClaimedASDF || 0).toLocaleString()} ASDF`;
+
+            // Update referred by
+            if (data.referredBy) {
+                ui.referralReferredBy.innerText = data.referredBy;
+                ui.referralReferredBy.className = 'text-cyan-400';
+                ui.registerSection.classList.add('hidden');
+            } else {
+                ui.referralReferredBy.innerText = 'None';
+                ui.referralReferredBy.className = 'text-gray-400';
+                ui.registerSection.classList.remove('hidden');
+                ui.registerBtn.disabled = false;
+            }
+
+        } catch (e) {
+            console.error('Referral stats error:', e);
+        }
+    }
+
+    function startReferralPolling() {
+        if (referralStatsInterval) clearInterval(referralStatsInterval);
+        fetchReferralStats();
+        referralStatsInterval = setInterval(fetchReferralStats, 30000); // Every 30s
+    }
+
+    // Copy referral code to clipboard
+    window.copyReferralCode = async function() {
+        const code = ui.referralCodeDisplay.value;
+        if (!code || code === '--------') return;
+
+        try {
+            await navigator.clipboard.writeText(code);
+            const originalText = ui.copyCodeBtn.innerText;
+            ui.copyCodeBtn.innerText = 'Copied!';
+            ui.copyCodeBtn.classList.add('bg-green-700');
+            setTimeout(() => {
+                ui.copyCodeBtn.innerText = originalText;
+                ui.copyCodeBtn.classList.remove('bg-green-700');
+            }, 2000);
+        } catch (e) {
+            alert('Failed to copy. Code: ' + code);
+        }
+    };
+
+    // Create referral code (GET endpoint auto-creates if eligible)
+    window.createReferralCode = async function() {
+        if (!state.pubKey) {
+            alert('Please connect your wallet first');
+            return;
+        }
+
+        try {
+            ui.referralCodeMessage.innerText = 'Creating code...';
+            const res = await fetch(`${API_URL}/referral/code?user=${state.pubKey.toString()}`);
+            const data = await res.json();
+
+            if (data.code) {
+                ui.referralCodeDisplay.value = data.code;
+                ui.referralCodeStatus.innerText = '✅ Active';
+                ui.referralCodeStatus.className = 'text-xs font-mono text-green-400';
+                ui.referralCodeMessage.innerText = data.isNew ? 'Code created! Share to earn rewards.' : 'Your code is ready!';
+                ui.copyCodeBtn.disabled = false;
+                fetchReferralStats();
+            } else if (data.error === 'INSUFFICIENT_ASDF') {
+                ui.referralCodeMessage.innerHTML = `<span class="text-red-400">Need ${data.required?.toLocaleString() || '55,200'} ASDF (you have ${data.current?.toLocaleString() || 0})</span>`;
+            } else {
+                ui.referralCodeMessage.innerHTML = `<span class="text-red-400">${data.error || 'Failed to create code'}</span>`;
+            }
+        } catch (e) {
+            console.error('Create code error:', e);
+            ui.referralCodeMessage.innerHTML = `<span class="text-red-400">Error creating code</span>`;
+        }
+    };
+
+    // Register with a referral code
+    window.registerReferralCode = async function() {
+        if (!state.pubKey) {
+            alert('Please connect your wallet first');
+            return;
+        }
+
+        const code = ui.registerCodeInput.value.trim().toUpperCase();
+        if (!code || code.length !== 8) {
+            ui.registerMessage.innerHTML = '<span class="text-red-400">Please enter a valid 8-character code</span>';
+            return;
+        }
+
+        try {
+            ui.registerBtn.disabled = true;
+            ui.registerMessage.innerText = 'Registering...';
+
+            const res = await fetch(`${API_URL}/referral/register`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    user: state.pubKey.toString(),
+                    code: code
+                })
+            });
+            const data = await res.json();
+
+            if (data.success) {
+                ui.registerMessage.innerHTML = '<span class="text-green-400">✅ Successfully registered!</span>';
+                ui.registerSection.classList.add('hidden');
+                fetchReferralStats();
+            } else {
+                ui.registerMessage.innerHTML = `<span class="text-red-400">${data.error || 'Registration failed'}</span>`;
+                ui.registerBtn.disabled = false;
+            }
+        } catch (e) {
+            console.error('Register error:', e);
+            ui.registerMessage.innerHTML = `<span class="text-red-400">Error registering code</span>`;
+            ui.registerBtn.disabled = false;
+        }
+    };
+
+    // Claim referral rewards
+    window.claimReferralRewards = async function() {
+        if (!state.pubKey) {
+            alert('Please connect your wallet first');
+            return;
+        }
+
+        try {
+            ui.claimBtn.disabled = true;
+            ui.claimBtnText.innerText = 'Claiming...';
+            ui.claimMessage.innerText = '';
+
+            const res = await fetch(`${API_URL}/referral/claim`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ user: state.pubKey.toString() })
+            });
+            const data = await res.json();
+
+            if (data.success) {
+                const claimed = Math.round(data.claimedASDF || 0);
+                ui.claimMessage.innerHTML = `<span class="text-green-400">✅ Claimed ${claimed.toLocaleString()} ASDF!</span>`;
+                if (data.txSignature) {
+                    ui.claimMessage.innerHTML += ` <a href="https://solscan.io/tx/${data.txSignature}" target="_blank" class="underline text-cyan-400">View TX</a>`;
+                }
+                // Refresh stats
+                setTimeout(fetchReferralStats, 2000);
+            } else {
+                ui.claimMessage.innerHTML = `<span class="text-red-400">${data.error || 'Claim failed'}</span>`;
+            }
+        } catch (e) {
+            console.error('Claim error:', e);
+            ui.claimMessage.innerHTML = `<span class="text-red-400">Error claiming rewards</span>`;
+        } finally {
+            ui.claimBtnText.innerText = 'Claim ASDF Rewards';
+            fetchReferralStats();
+        }
+    };
+    // ==================== END REFERRAL SYSTEM ====================
 
     async function poll() {
         if (document.hidden) return;

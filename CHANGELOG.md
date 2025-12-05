@@ -1,5 +1,212 @@
 # ASDForecast Changelog
 
+## Version 145.0 - Referral Flywheel System (552 SYMMETRY)
+
+### Overview
+
+This update introduces a referral rewards system designed to align gamblers and holders through economic incentives. The "552 SYMMETRY" design forces users to hold ASDF to claim rewards, creating a virtuous flywheel.
+
+---
+
+## Philosophy
+
+**Goal:** Transform every gambler into a long-term ASDF holder via aligned incentives.
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    REFERRAL FLYWHEEL                        │
+├─────────────────────────────────────────────────────────────┤
+│  1. User joins via referral code                            │
+│  2. User bets → accumulates 0.552% in ASDF (pending)        │
+│  3. Referrer accumulates 0.448% in ASDF (pending)           │
+│  4. To claim: must HOLD as much ASDF as pending             │
+│  5. User buys ASDF → can claim → holds more                 │
+│  6. Repeat: more play + hold → more earnings                │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## New Features
+
+### 1. Referral Code System
+
+**Requirements:**
+- Hold >= 55,200 ASDF to create a referral code
+- 8-character unique code per user
+
+**Rewards (based on BET amount, not fees):**
+| Role | Reward | Description |
+|------|--------|-------------|
+| Filleul (referred user) | 0.552% | Rebate on your own bets |
+| Parrain (referrer) | 0.448% | Commission on referral's bets |
+
+### 2. Proportional Claim Mechanism
+
+```javascript
+claimableAmount = min(pendingRewards, currentASDF_Balance)
+```
+
+**Example Flywheel:**
+1. User referred bets 10 SOL → accumulates ~0.0552 SOL worth of ASDF
+2. User holds 0 ASDF → can claim 0 (must buy first)
+3. User buys 1000 ASDF → can claim up to 1000 ASDF rewards
+4. User claims → now holds more ASDF
+5. Continues playing → accumulates more → buys more to claim more
+
+### 3. Live ASDF Price Conversion
+
+- Rewards tracked in SOL value
+- Converted to ASDF at claim time using Jupiter Price API
+- Ensures fair conversion regardless of price volatility
+
+---
+
+## Files Modified
+
+### server.js
+
+**New Configuration (line 56-67):**
+```javascript
+const REFERRAL_CONFIG = {
+    USER_REBATE_PERCENT: 0.00552,     // 0.552% of bet → Filleul
+    REFERRER_REWARD_PERCENT: 0.00448, // 0.448% of bet → Parrain
+    MIN_ASDF_TO_REFER: 55200,
+    CODE_LENGTH: 8,
+    MAX_REFERRALS_PER_USER: 100,
+    REWARD_CURRENCY: 'ASDF',
+    CLAIM_RATIO: 1.0
+};
+```
+
+**New Data Structure:**
+```javascript
+referralData = {
+    links: {},           // referrer -> {code, referredUsers[], ...}
+    codeToReferrer: {},  // code -> referrer
+    userToReferrer: {},  // user -> referrer
+    pendingRewards: {}   // user -> {asReferrer, asUser, totalClaimedASDF}
+};
+```
+
+**New Functions:**
+| Function | Purpose |
+|----------|---------|
+| `getASDF_Price()` | Fetches live ASDF/SOL price from Jupiter API |
+| `getOrCreateReferralCode(pubKey)` | Creates referral code if eligible |
+| `processReferralRewards(bet)` | Calculates rewards based on bet amount |
+| `transferASDF(recipient, amount)` | SPL token transfer for claims |
+
+**New API Endpoints:**
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/referral/code?user=` | GET | Get or create referral code |
+| `/api/referral/register` | POST | Register with a referral code |
+| `/api/referral/stats?user=` | GET | User's referral stats & pending rewards |
+| `/api/referral/claim` | POST | Claim pending ASDF rewards |
+
+**New Data File:**
+- `data/referral_data.json` - Referral links and pending rewards
+
+---
+
+### frontend.html
+
+**New UI Section (lines 391-487):**
+- Referral code display with copy button
+- Pending rewards / Balance / Claimable grid
+- Claim button with transaction link
+- Stats grid (referred users, volume, total claimed)
+- Register with code section
+- 552 SYMMETRY explanation
+
+**New JavaScript Functions (lines 1010-1238):**
+| Function | Purpose |
+|----------|---------|
+| `fetchReferralStats()` | Fetches user's referral data from API |
+| `startReferralPolling()` | Polls every 30 seconds when connected |
+| `copyReferralCode()` | Copies code to clipboard |
+| `createReferralCode()` | Requests code creation |
+| `registerReferralCode()` | Registers user with referral code |
+| `claimReferralRewards()` | Claims pending ASDF rewards |
+
+**New UI Element IDs:**
+- `#referral-code-display`, `#referral-code-status`
+- `#referral-pending-asdf`, `#referral-your-balance`, `#referral-claimable`
+- `#claim-btn`, `#claim-message`
+- `#referral-users-count`, `#referral-volume`, `#referral-total-claimed`
+- `#register-code-input`, `#register-btn`, `#register-message`
+
+---
+
+### package.json
+
+**New Dependency:**
+```json
+"@solana/spl-token": "^0.4.14"
+```
+
+---
+
+## API Response Examples
+
+**GET /api/referral/stats:**
+```json
+{
+  "isReferrer": true,
+  "referralCode": "ASDF1234",
+  "referredUsers": 5,
+  "totalVolumeGenerated": 125.5,
+  "referredBy": "FuLg...miPn",
+  "pending": {
+    "asReferrerSOL": 0.125,
+    "asUserSOL": 0.055,
+    "totalASDF": 18000,
+    "totalClaimedASDF": 5000
+  },
+  "claim": {
+    "userASDF_Balance": 50000,
+    "claimableASDF": 18000,
+    "asdfPriceSOL": 0.00001
+  }
+}
+```
+
+---
+
+## Testing
+
+```bash
+# Test referral stats
+curl "http://localhost:3000/api/referral/stats?user=YOUR_PUBKEY"
+
+# Create/get referral code
+curl "http://localhost:3000/api/referral/code?user=YOUR_PUBKEY"
+
+# Register with code
+curl -X POST http://localhost:3000/api/referral/register \
+  -H "Content-Type: application/json" \
+  -d '{"user":"YOUR_PUBKEY","code":"ASDF1234"}'
+
+# Claim rewards
+curl -X POST http://localhost:3000/api/referral/claim \
+  -H "Content-Type: application/json" \
+  -d '{"user":"YOUR_PUBKEY"}'
+```
+
+---
+
+## Migration Notes
+
+- No database migration needed - uses JSON file storage
+- Referral data auto-initializes on first run
+- Existing users can create referral codes if they hold enough ASDF
+- Rewards start accumulating immediately for referred users
+
+---
+
+---
+
 ## Version 121.0 - Lottery System with Activity Requirement
 
 ### Overview

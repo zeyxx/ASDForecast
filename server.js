@@ -3,6 +3,7 @@ const express = require('express');
 const cors = require('cors');
 const crypto = require('crypto');
 const { Connection, PublicKey, Keypair, Transaction, SystemProgram, sendAndConfirmTransaction, ComputeBudgetProgram } = require('@solana/web3.js');
+const { getOrCreateAssociatedTokenAccount, createTransferInstruction, TOKEN_PROGRAM_ID } = require('@solana/spl-token');
 const axios = require('axios');
 const fs = require('fs').promises;
 const fsSync = require('fs');
@@ -618,6 +619,69 @@ async function getUserASDFBalance(userPubKey) {
     } catch (e) {
         console.error(`> [LOTTERY] Balance query failed for ${userPubKey}:`, e.message);
         return 0;
+    }
+}
+
+// Transfer ASDF tokens from FEE_WALLET to a user (for referral claims)
+async function transferASDF(recipientPubKey, amount) {
+    if (!houseKeypair) {
+        throw new Error("House wallet not configured");
+    }
+
+    const connection = new Connection(SOLANA_NETWORK);
+    const mintPubKey = new PublicKey(ASDF_MINT);
+    const recipientPubKeyObj = new PublicKey(recipientPubKey);
+
+    try {
+        // Get or create the source token account (FEE_WALLET's ASDF account)
+        const sourceTokenAccount = await getOrCreateAssociatedTokenAccount(
+            connection,
+            houseKeypair,
+            mintPubKey,
+            houseKeypair.publicKey
+        );
+
+        // Get or create the destination token account (recipient's ASDF account)
+        const destinationTokenAccount = await getOrCreateAssociatedTokenAccount(
+            connection,
+            houseKeypair,  // Payer for account creation if needed
+            mintPubKey,
+            recipientPubKeyObj
+        );
+
+        // ASDF has 6 decimals
+        const ASDF_DECIMALS = 6;
+        const amountInSmallestUnit = Math.floor(amount * Math.pow(10, ASDF_DECIMALS));
+
+        // Create transfer instruction
+        const transferIx = createTransferInstruction(
+            sourceTokenAccount.address,
+            destinationTokenAccount.address,
+            houseKeypair.publicKey,
+            amountInSmallestUnit,
+            [],
+            TOKEN_PROGRAM_ID
+        );
+
+        // Add priority fee for faster confirmation
+        const priorityFeeIx = ComputeBudgetProgram.setComputeUnitPrice({
+            microLamports: PRIORITY_FEE_UNITS
+        });
+
+        // Build and send transaction
+        const transaction = new Transaction().add(priorityFeeIx, transferIx);
+        const signature = await sendAndConfirmTransaction(
+            connection,
+            transaction,
+            [houseKeypair],
+            { commitment: 'confirmed' }
+        );
+
+        console.log(`> [REFERRAL] ASDF Transfer: ${amount.toLocaleString()} ASDF to ${recipientPubKey.slice(0, 8)}... | Sig: ${signature.slice(0, 20)}...`);
+        return signature;
+    } catch (e) {
+        console.error(`> [REFERRAL] ASDF Transfer failed: ${e.message}`);
+        throw e;
     }
 }
 
@@ -2046,11 +2110,20 @@ app.post('/api/referral/claim', stateLimiter, async (req, res) => {
         const claimedSOL = claimableASDF * asdfPrice;
         const remainingSOL = totalPendingSOL - claimedSOL;
 
-        // TODO: Implement actual ASDF transfer from FEE_WALLET to user
-        // For now, we update the tracking and log the claim
-        // const txSignature = await transferASDF(FEE_WALLET, user, claimableASDF);
+        // Execute ASDF transfer from house wallet to user
+        let txSignature = null;
+        try {
+            txSignature = await transferASDF(user, Math.floor(claimableASDF));
+        } catch (transferError) {
+            console.error(`> [REFERRAL] Transfer failed for ${user}:`, transferError.message);
+            return res.status(500).json({
+                error: "TRANSFER_FAILED",
+                message: "ASDF transfer failed. Please try again later.",
+                details: transferError.message
+            });
+        }
 
-        // Update pending rewards
+        // Update pending rewards only after successful transfer
         const claimRatio = claimedSOL / totalPendingSOL;
         referralData.pendingRewards[user].asReferrer *= (1 - claimRatio);
         referralData.pendingRewards[user].asUser *= (1 - claimRatio);
@@ -2059,7 +2132,7 @@ app.post('/api/referral/claim', stateLimiter, async (req, res) => {
 
         await saveReferralData();
 
-        console.log(`> [REFERRAL] Claim: ${user.slice(0, 8)}... claimed ${Math.floor(claimableASDF)} ASDF (${claimedSOL.toFixed(6)} SOL value)`);
+        console.log(`> [REFERRAL] Claim SUCCESS: ${user.slice(0, 8)}... claimed ${Math.floor(claimableASDF)} ASDF | Tx: ${txSignature?.slice(0, 20)}...`);
 
         res.json({
             success: true,
@@ -2073,8 +2146,7 @@ app.post('/api/referral/claim', stateLimiter, async (req, res) => {
             },
             totalClaimed: Math.floor(referralData.pendingRewards[user].totalClaimedASDF),
             message: `Successfully claimed ${Math.floor(claimableASDF).toLocaleString()} ASDF!`,
-            // TODO: Add txSignature when transfer is implemented
-            note: "ASDF transfer pending implementation - rewards tracked for future distribution"
+            txSignature: txSignature
         });
     } catch (e) {
         console.error(`> [REFERRAL] Claim error for ${user}:`, e.message);
