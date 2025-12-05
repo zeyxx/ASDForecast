@@ -35,20 +35,35 @@ const PAYOUT_MULTIPLIER = 0.94;
 const FEE_PERCENT = 0.0552;
 const UPKEEP_PERCENT = 0.0048; // 0.48%
 const FRAME_DURATION = 15 * 60 * 1000;
-const BACKEND_VERSION = "143.0"; // UPDATE: Lottery System + Sentiment Persistence Merge
+const BACKEND_VERSION = "145.0"; // UPDATE: Referral Flywheel - ASDF Rewards + Proportional Claim
 
 // --- LOTTERY CONFIG ---
 const LOTTERY_CONFIG = {
-    ELIGIBILITY_PERCENT: 0.0000552,      // 0.00552% of circulating supply
+    ELIGIBILITY_PERCENT: 0.0000552,      // 0.00552% of circulating supply (552/1M)
     MAX_TICKETS: 52,                      // Max tickets per holder
     DRAW_INTERVAL_MS: 7 * 24 * 60 * 60 * 1000, // 7 days
     ACTIVITY_WINDOW_DAYS: 7,              // Days of activity required for full eligibility
     BASE_PRIZE: 100000,                   // Base ASDF prize amount (legacy - now uses pool)
     PRIZE_PER_TICKET: 10000,              // Additional ASDF per ticket in pool (legacy)
     SUPPLY_CACHE_MS: 5 * 60 * 1000,       // Cache supply for 5 minutes
-    // NEW: Fee-funded prize pool system
+    // 552 SYMMETRY: Fee-funded prize pool system
+    // 0.0552% = eligibility (552/1,000,000)
+    // 55.2% = community return (552/1,000)
     PRIZE_POOL_THRESHOLD: 1_000_000,      // 1M ASDF threshold to trigger lottery
-    FEE_TO_POOL_PERCENT: 0.20             // 20% of platform fees go to lottery pool
+    ASDF_TO_POOL_PERCENT: 0.552           // 55.2% of collected ASDF goes to lottery pool
+};
+
+// --- REFERRAL CONFIG (552 SYMMETRY - Gambler-Holder Alignment) ---
+const REFERRAL_CONFIG = {
+    // Rewards based on BET AMOUNT (not fees) - paid in ASDF
+    USER_REBATE_PERCENT: 0.00552,         // 0.552% of bet → Filleul (rewards active user)
+    REFERRER_REWARD_PERCENT: 0.00448,     // 0.448% of bet → Parrain (referrer incentive)
+    // Total: 1% of bet volume redistributed to grow user base
+    MIN_ASDF_TO_REFER: 55200,             // Min ASDF to create referral code (552 × 100)
+    CODE_LENGTH: 8,
+    MAX_REFERRALS_PER_USER: 100,
+    REWARD_CURRENCY: 'ASDF',              // Rewards paid in ASDF (forces holding)
+    CLAIM_RATIO: 1.0                      // Can claim up to 100% of your ASDF balance
 };
 
 const PRIORITY_FEE_UNITS = 50000; 
@@ -102,6 +117,7 @@ const PAYOUT_HISTORY_FILE = path.join(DATA_DIR, 'payout_history.json');
 const PAYOUT_MASTER_LOG = path.join(DATA_DIR, 'payout_master.log');
 const FAILED_REFUNDS_FILE = path.join(DATA_DIR, 'failed_refunds.json');
 const SENTIMENT_VOTES_FILE = path.join(DATA_DIR, 'sentiment_votes.json');
+const REFERRAL_FILE = path.join(DATA_DIR, 'referrals.json');
 
 log(`> [SYS] Persistence Root: ${DATA_DIR}`);
 
@@ -166,13 +182,21 @@ let lotteryState = {
     currentRound: 1,
     roundStartTime: Date.now(),
     lastDrawTime: null,
-    nextDrawTime: Date.now() + LOTTERY_CONFIG.DRAW_INTERVAL_MS,
-    // NEW: Fee-funded prize pool
-    prizePool: 0,                         // Accumulated ASDF from fees
-    isThresholdReached: false             // True when prizePool >= PRIZE_POOL_THRESHOLD
+    nextDrawTime: Date.now() + LOTTERY_CONFIG.DRAW_INTERVAL_MS
+    // Prize pool is calculated dynamically: totalASDF × 55.2%
+    // This makes it transparent and verifiable on-chain
 };
 let lotteryHistory = { draws: [] };
-let cachedCirculatingSupply = { value: 0, timestamp: 0 }; 
+let cachedCirculatingSupply = { value: 0, timestamp: 0 };
+
+// --- REFERRAL STATE (552 SYMMETRY - Gambler-Holder Alignment) ---
+let referralData = {
+    links: {},           // referrerPubKey -> { code, referredUsers[], totalVolumeGenerated, createdAt }
+    codeToReferrer: {},  // code -> referrerPubKey
+    userToReferrer: {},  // userPubKey -> referrerPubKey (who referred this user)
+    // Pending rewards in SOL value (converted to ASDF at claim time via live price)
+    pendingRewards: {}   // userPubKey -> { asReferrer: SOL, asUser: SOL, totalClaimedASDF: 0 }
+};
 
 // --- STATE CACHING (NEW) ---
 let cachedPublicState = null;
@@ -355,15 +379,10 @@ function loadLotteryState() {
     try {
         if (fsSync.existsSync(LOTTERY_STATE_FILE)) {
             const loadedState = JSON.parse(fsSync.readFileSync(LOTTERY_STATE_FILE));
-            // Merge loaded state with defaults (handles migration for new fields)
-            lotteryState = {
-                ...lotteryState,  // Keep defaults for new fields
-                ...loadedState    // Override with loaded values
-            };
-            // Ensure new fields exist
-            if (lotteryState.prizePool === undefined) lotteryState.prizePool = 0;
-            if (lotteryState.isThresholdReached === undefined) lotteryState.isThresholdReached = false;
-            console.log(`> [LOTTERY] State loaded. Round ${lotteryState.currentRound}, Pool: ${lotteryState.prizePool.toLocaleString()} ASDF`);
+            lotteryState = { ...lotteryState, ...loadedState };
+            // Prize pool is calculated dynamically: totalASDF × 55.2%
+            const dynamicPool = Math.floor(globalStats.totalASDF * LOTTERY_CONFIG.ASDF_TO_POOL_PERCENT);
+            console.log(`> [LOTTERY] State loaded. Round ${lotteryState.currentRound}, Dynamic Pool: ${dynamicPool.toLocaleString()} ASDF (55.2% of ${Math.floor(globalStats.totalASDF).toLocaleString()})`);
         }
         if (fsSync.existsSync(LOTTERY_HISTORY_FILE)) {
             lotteryHistory = JSON.parse(fsSync.readFileSync(LOTTERY_HISTORY_FILE));
@@ -380,6 +399,174 @@ async function saveLotteryState() {
 
 async function saveLotteryHistory() {
     await atomicWrite(LOTTERY_HISTORY_FILE, lotteryHistory);
+}
+
+// --- REFERRAL PERSISTENCE (552 SYMMETRY) ---
+function loadReferralData() {
+    try {
+        if (fsSync.existsSync(REFERRAL_FILE)) {
+            referralData = JSON.parse(fsSync.readFileSync(REFERRAL_FILE));
+            const totalReferrers = Object.keys(referralData.links).length;
+            const totalReferred = Object.keys(referralData.userToReferrer).length;
+            console.log(`> [REFERRAL] Loaded. ${totalReferrers} referrers, ${totalReferred} referred users.`);
+        }
+    } catch (e) {
+        console.error("> [REFERRAL] Load Error:", e.message);
+    }
+}
+
+async function saveReferralData() {
+    await atomicWrite(REFERRAL_FILE, referralData);
+}
+
+// Generate unique referral code
+function generateReferralCode() {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // Removed ambiguous chars (0, O, I, 1)
+    let code;
+    do {
+        code = '';
+        for (let i = 0; i < REFERRAL_CONFIG.CODE_LENGTH; i++) {
+            code += chars.charAt(crypto.randomInt(0, chars.length));
+        }
+    } while (referralData.codeToReferrer[code]); // Ensure unique
+    return code;
+}
+
+// Get or create referral code for a user
+async function getOrCreateReferralCode(userPubKey) {
+    // Check if user already has a referral link
+    if (referralData.links[userPubKey]) {
+        return referralData.links[userPubKey].code;
+    }
+
+    // Check ASDF balance requirement
+    const balance = await getUserASDFBalance(userPubKey);
+    if (balance < REFERRAL_CONFIG.MIN_ASDF_TO_REFER) {
+        return null; // Not enough ASDF to refer
+    }
+
+    // Create new referral link
+    const code = generateReferralCode();
+    referralData.links[userPubKey] = {
+        code: code,
+        referredUsers: [],
+        totalFeesGenerated: 0,
+        totalRewardsEarned: 0,
+        createdAt: Date.now()
+    };
+    referralData.codeToReferrer[code] = userPubKey;
+    await saveReferralData();
+
+    console.log(`> [REFERRAL] New code created: ${code} for ${userPubKey.slice(0, 8)}...`);
+    return code;
+}
+
+// Register a user with a referral code
+async function registerReferral(newUserPubKey, referralCode) {
+    // Validate code exists
+    const referrerPubKey = referralData.codeToReferrer[referralCode.toUpperCase()];
+    if (!referrerPubKey) {
+        return { success: false, error: 'INVALID_CODE' };
+    }
+
+    // Can't refer yourself
+    if (referrerPubKey === newUserPubKey) {
+        return { success: false, error: 'SELF_REFERRAL' };
+    }
+
+    // Check if user is already referred
+    if (referralData.userToReferrer[newUserPubKey]) {
+        return { success: false, error: 'ALREADY_REFERRED' };
+    }
+
+    // Check max referrals limit
+    const referrerLink = referralData.links[referrerPubKey];
+    if (referrerLink.referredUsers.length >= REFERRAL_CONFIG.MAX_REFERRALS_PER_USER) {
+        return { success: false, error: 'REFERRER_MAX_REACHED' };
+    }
+
+    // Register the referral
+    referralData.userToReferrer[newUserPubKey] = referrerPubKey;
+    referrerLink.referredUsers.push(newUserPubKey);
+    await saveReferralData();
+
+    // Update new user's data with referral info
+    const userData = await getUser(newUserPubKey);
+    userData.referredBy = referrerPubKey;
+    userData.referredAt = Date.now();
+    await saveUser(newUserPubKey, userData);
+
+    console.log(`> [REFERRAL] ${newUserPubKey.slice(0, 8)}... referred by ${referrerPubKey.slice(0, 8)}... (code: ${referralCode})`);
+    return { success: true, referrer: referrerPubKey };
+}
+
+// --- ASDF PRICE FETCHING (Jupiter API) ---
+let cachedASDF_Price = { price: 0, timestamp: 0 };
+const ASDF_PRICE_CACHE_MS = 60 * 1000; // Cache price for 1 minute
+
+async function getASDF_Price() {
+    const now = Date.now();
+    // Return cached price if still valid
+    if (cachedASDF_Price.price > 0 && (now - cachedASDF_Price.timestamp) < ASDF_PRICE_CACHE_MS) {
+        return cachedASDF_Price.price;
+    }
+
+    try {
+        // Jupiter Price API v4
+        const response = await axios.get(
+            `https://price.jup.ag/v4/price?ids=${ASDF_MINT}`,
+            { timeout: 5000 }
+        );
+
+        if (response.data?.data?.[ASDF_MINT]?.price) {
+            const price = response.data.data[ASDF_MINT].price;
+            cachedASDF_Price = { price, timestamp: now };
+            console.log(`> [REFERRAL] ASDF price updated: $${price}`);
+            return price;
+        }
+    } catch (e) {
+        console.error(`> [REFERRAL] Price fetch error: ${e.message}`);
+    }
+
+    // Fallback to cached or default
+    return cachedASDF_Price.price || 0.00001; // Default ~$0.00001 if no data
+}
+
+// Calculate and accumulate referral rewards based on BET AMOUNT (not fees)
+// Rewards stored in SOL value, converted to ASDF at claim time
+async function processReferralRewards(userPubKey, betAmountSol) {
+    const referrerPubKey = referralData.userToReferrer[userPubKey];
+    if (!referrerPubKey || !referralData.links[referrerPubKey]) {
+        return { userRebate: 0, referrerReward: 0 }; // No referrer for this user
+    }
+
+    // Calculate rewards based on BET AMOUNT (552 SYMMETRY)
+    // Filleul (active user) gets MORE: 0.552%
+    // Parrain (referrer) gets LESS: 0.448%
+    const userRebate = betAmountSol * REFERRAL_CONFIG.USER_REBATE_PERCENT;
+    const referrerReward = betAmountSol * REFERRAL_CONFIG.REFERRER_REWARD_PERCENT;
+
+    // Initialize pending rewards if needed
+    if (!referralData.pendingRewards) referralData.pendingRewards = {};
+
+    if (!referralData.pendingRewards[userPubKey]) {
+        referralData.pendingRewards[userPubKey] = { asReferrer: 0, asUser: 0, totalClaimedASDF: 0 };
+    }
+    if (!referralData.pendingRewards[referrerPubKey]) {
+        referralData.pendingRewards[referrerPubKey] = { asReferrer: 0, asUser: 0, totalClaimedASDF: 0 };
+    }
+
+    // Accumulate rewards in SOL value (will convert to ASDF at claim)
+    referralData.pendingRewards[userPubKey].asUser += userRebate;
+    referralData.pendingRewards[referrerPubKey].asReferrer += referrerReward;
+
+    // Update referrer link stats
+    if (!referralData.links[referrerPubKey].totalVolumeGenerated) {
+        referralData.links[referrerPubKey].totalVolumeGenerated = 0;
+    }
+    referralData.links[referrerPubKey].totalVolumeGenerated += betAmountSol;
+
+    return { userRebate, referrerReward };
 }
 
 // --- LOTTERY ON-CHAIN QUERIES ---
@@ -677,8 +864,8 @@ async function executeLotteryDraw() {
 
         console.log(`> [LOTTERY] ${participants.length} participants with ${totalTickets} total tickets`);
 
-        // 3. Calculate prize - NOW USES ACCUMULATED POOL
-        const prize = Math.floor(lotteryState.prizePool); // Use full pool as prize
+        // 3. Calculate prize - 552 SYMMETRY: 55.2% of collected ASDF
+        const prize = Math.floor(globalStats.totalASDF * LOTTERY_CONFIG.ASDF_TO_POOL_PERCENT);
 
         // 4. Select random winner using crypto.randomInt for fairness
         const randomIndex = crypto.randomInt(0, ticketPool.length);
@@ -722,10 +909,11 @@ async function executeLotteryDraw() {
         lotteryState.lastDrawTime = Date.now();
         lotteryState.nextDrawTime = Date.now() + LOTTERY_CONFIG.DRAW_INTERVAL_MS;
         lotteryState.currentRound++;
-        // Reset prize pool after successful draw
-        lotteryState.prizePool = 0;
-        lotteryState.isThresholdReached = false;
         await saveLotteryState();
+
+        // Note: Prize pool is calculated dynamically from totalASDF
+        // After draw, totalASDF remains unchanged (ASDF is still held)
+        // Future: implement actual ASDF distribution to winner
 
         console.log(`> [LOTTERY] Draw complete! Winner: ${winnerPubKey.slice(0, 8)}... Prize: ${prize.toLocaleString()} ASDF`);
 
@@ -748,19 +936,23 @@ async function executeLotteryDraw() {
 
 // Check if it's time for a lottery draw
 async function checkLotterySchedule() {
-    // NEW: Only draw if threshold is reached
-    if (!lotteryState.isThresholdReached) {
-        return; // Pool not full yet
+    // 552 SYMMETRY: Calculate pool dynamically from real ASDF
+    const currentPool = globalStats.totalASDF * LOTTERY_CONFIG.ASDF_TO_POOL_PERCENT;
+    const isThresholdReached = currentPool >= LOTTERY_CONFIG.PRIZE_POOL_THRESHOLD;
+
+    if (!isThresholdReached) {
+        return; // Pool not full yet - need more volume
     }
 
     if (Date.now() >= lotteryState.nextDrawTime) {
-        console.log("> [LOTTERY] Draw time reached and threshold met. Executing...");
+        console.log(`> [LOTTERY] Draw time reached! Pool: ${Math.floor(currentPool).toLocaleString()} ASDF (55.2% of ${Math.floor(globalStats.totalASDF).toLocaleString()})`);
         await executeLotteryDraw();
     }
 }
 
 loadGlobalState();
 loadLotteryState();
+loadReferralData();
 
 // ... (unchanged ASDF logic) ... 
 async function updateASDFPurchases() {
@@ -1049,29 +1241,42 @@ async function closeFrame(closePrice, closeTime) {
 
         globalStats.totalFees += feeAmt;
 
-        // NEW: Accumulate portion of fees to lottery prize pool
-        // Using SOL price (~$230) and ASDF value to estimate contribution
-        // For now: 1 SOL fee ≈ 50,000 ASDF contribution (adjustable)
-        const ASDF_PER_SOL_FEE = 50000;
-        const lotteryContribution = feeAmt * LOTTERY_CONFIG.FEE_TO_POOL_PERCENT * ASDF_PER_SOL_FEE;
-        if (lotteryContribution > 0) {
-            lotteryState.prizePool += lotteryContribution;
-            lotteryState.isThresholdReached = lotteryState.prizePool >= LOTTERY_CONFIG.PRIZE_POOL_THRESHOLD;
-            saveLotteryState().catch(e => console.error("[LOTTERY] Failed to save pool update:", e.message));
-        }
+        // 552 SYMMETRY: Prize pool is dynamically calculated from real ASDF collected
+        // prizePool = totalASDF × 55.2% (calculated in API response, not stored)
+        // This keeps the pool transparent and verifiable on-chain
 
         let winnerCount = 0;
         let payoutTotal = 0;
         // FIX: userPositions hoisted to avoid ReferenceError below
-        const userPositions = {}; 
-        
+        const userPositions = {};
+
+        // Track all user positions (including for FLAT results - needed for referrals)
+        gameState.bets.forEach(bet => {
+            if (!userPositions[bet.user]) userPositions[bet.user] = { up: 0, down: 0, sol: 0 };
+            if (bet.direction === 'UP') userPositions[bet.user].up += bet.shares;
+            else userPositions[bet.user].down += bet.shares;
+            userPositions[bet.user].sol += bet.costSol;
+        });
+
+        // 552 SYMMETRY: Process referral rewards based on BET AMOUNT (not fees)
+        // Filleul gets 0.552% of their bet, Parrain gets 0.448% of referred user's bet
+        let totalReferrerRewards = 0;
+        let totalUserRebates = 0;
+        for (const [userPubKey, pos] of Object.entries(userPositions)) {
+            if (pos.sol > 0) {
+                // Pass BET AMOUNT (pos.sol) - not fee contribution
+                const { referrerReward, userRebate } = await processReferralRewards(userPubKey, pos.sol);
+                totalReferrerRewards += referrerReward;
+                totalUserRebates += userRebate;
+            }
+        }
+        if (totalReferrerRewards > 0 || totalUserRebates > 0) {
+            await saveReferralData();
+            log(`> [REFERRAL] Frame ${frameId}: ${totalUserRebates.toFixed(6)} SOL rebates (0.552%) + ${totalReferrerRewards.toFixed(6)} SOL referrer rewards (0.448%)`, "INFO");
+        }
+
         if (result !== "FLAT") {
             const potSol = frameSol * PAYOUT_MULTIPLIER;
-            gameState.bets.forEach(bet => {
-                if (!userPositions[bet.user]) userPositions[bet.user] = { up: 0, down: 0 };
-                if (bet.direction === 'UP') userPositions[bet.user].up += bet.shares;
-                else userPositions[bet.user].down += bet.shares;
-            });
             for (const [pk, pos] of Object.entries(userPositions)) {
                 const rUp = Math.round(pos.up * 10000) / 10000;
                 const rDown = Math.round(pos.down * 10000) / 10000;
@@ -1320,18 +1525,36 @@ function updatePublicStateCache() {
         // Broadcast & Sentiment
         broadcast: gameState.broadcast,
         hourlySentiment: gameState.hourlySentiment,
-        // Lottery summary
-        lottery: {
-            currentRound: lotteryState.currentRound,
-            nextDrawTime: lotteryState.nextDrawTime,
-            msUntilDraw: Math.max(0, lotteryState.nextDrawTime - now),
-            recentWinner: lotteryHistory.draws.length > 0 ? lotteryHistory.draws[0].winner : null,
-            recentPrize: lotteryHistory.draws.length > 0 ? lotteryHistory.draws[0].prize : null,
-            // NEW: Prize pool accumulation
-            prizePool: Math.floor(lotteryState.prizePool),
-            prizePoolThreshold: LOTTERY_CONFIG.PRIZE_POOL_THRESHOLD,
-            prizePoolPercent: Math.min(100, (lotteryState.prizePool / LOTTERY_CONFIG.PRIZE_POOL_THRESHOLD) * 100),
-            isThresholdReached: lotteryState.isThresholdReached
+        // Lottery summary - 552 SYMMETRY
+        lottery: (() => {
+            // Dynamic calculation: 55.2% of collected ASDF goes to pool
+            const prizePool = Math.floor(globalStats.totalASDF * LOTTERY_CONFIG.ASDF_TO_POOL_PERCENT);
+            const isThresholdReached = prizePool >= LOTTERY_CONFIG.PRIZE_POOL_THRESHOLD;
+            return {
+                currentRound: lotteryState.currentRound,
+                nextDrawTime: lotteryState.nextDrawTime,
+                msUntilDraw: Math.max(0, lotteryState.nextDrawTime - now),
+                recentWinner: lotteryHistory.draws.length > 0 ? lotteryHistory.draws[0].winner : null,
+                recentPrize: lotteryHistory.draws.length > 0 ? lotteryHistory.draws[0].prize : null,
+                // 552 SYMMETRY: 55.2% of totalASDF = prize pool
+                prizePool: prizePool,
+                prizePoolThreshold: LOTTERY_CONFIG.PRIZE_POOL_THRESHOLD,
+                prizePoolPercent: Math.min(100, (prizePool / LOTTERY_CONFIG.PRIZE_POOL_THRESHOLD) * 100),
+                isThresholdReached: isThresholdReached,
+                // Transparency: show source data
+                totalASDF: Math.floor(globalStats.totalASDF),
+                allocationPercent: LOTTERY_CONFIG.ASDF_TO_POOL_PERCENT * 100
+            };
+        })(),
+        // Referral summary - 552 SYMMETRY (Gambler-Holder Alignment)
+        referral: {
+            totalReferrers: Object.keys(referralData.links).length,
+            totalReferred: Object.keys(referralData.userToReferrer).length,
+            userRebatePercent: REFERRAL_CONFIG.USER_REBATE_PERCENT * 100,      // 0.552% to user (filleul)
+            referrerRewardPercent: REFERRAL_CONFIG.REFERRER_REWARD_PERCENT * 100, // 0.448% to referrer (parrain)
+            totalRedistributed: 1.0,  // 1% of bet volume redistributed
+            minASDF: REFERRAL_CONFIG.MIN_ASDF_TO_REFER,
+            rewardCurrency: REFERRAL_CONFIG.REWARD_CURRENCY
         }
     };
 }
@@ -1618,6 +1841,288 @@ app.post('/api/admin/lottery/draw', async (req, res) => {
         console.error("> [ADMIN] Lottery draw error:", e.message);
         res.status(500).json({ error: "DRAW_ERROR", message: e.message });
     }
+});
+
+// --- REFERRAL API (552 SYMMETRY) ---
+
+// Get or create referral code for a user
+app.get('/api/referral/code', stateLimiter, async (req, res) => {
+    const userKey = req.query.user;
+
+    if (!userKey || !isValidSolanaAddress(userKey)) {
+        return res.status(400).json({ error: "INVALID_USER_ADDRESS" });
+    }
+
+    try {
+        const existingCode = referralData.links[userKey]?.code;
+
+        if (existingCode) {
+            const link = referralData.links[userKey];
+            return res.json({
+                code: existingCode,
+                referredCount: link.referredUsers.length,
+                totalFeesGenerated: link.totalFeesGenerated,
+                totalRewardsEarned: link.totalRewardsEarned,
+                createdAt: link.createdAt
+            });
+        }
+
+        // Try to create new code (requires ASDF balance)
+        const code = await getOrCreateReferralCode(userKey);
+
+        if (!code) {
+            const balance = await getUserASDFBalance(userKey);
+            return res.status(403).json({
+                error: "INSUFFICIENT_ASDF",
+                required: REFERRAL_CONFIG.MIN_ASDF_TO_REFER,
+                current: balance,
+                message: `Need ${REFERRAL_CONFIG.MIN_ASDF_TO_REFER.toLocaleString()} ASDF to create referral code`
+            });
+        }
+
+        res.json({
+            code: code,
+            referredCount: 0,
+            totalFeesGenerated: 0,
+            totalRewardsEarned: 0,
+            createdAt: Date.now(),
+            isNew: true
+        });
+    } catch (e) {
+        console.error(`> [REFERRAL] Code error for ${userKey}:`, e.message);
+        res.status(500).json({ error: "REFERRAL_CODE_ERROR" });
+    }
+});
+
+// Register with a referral code
+app.post('/api/referral/register', stateLimiter, async (req, res) => {
+    const { user, code } = req.body;
+
+    if (!user || !isValidSolanaAddress(user)) {
+        return res.status(400).json({ error: "INVALID_USER_ADDRESS" });
+    }
+
+    if (!code || typeof code !== 'string' || code.length !== REFERRAL_CONFIG.CODE_LENGTH) {
+        return res.status(400).json({ error: "INVALID_REFERRAL_CODE" });
+    }
+
+    try {
+        const result = await registerReferral(user, code);
+
+        if (!result.success) {
+            const errorMessages = {
+                'INVALID_CODE': 'Referral code not found',
+                'SELF_REFERRAL': 'Cannot use your own referral code',
+                'ALREADY_REFERRED': 'You have already been referred',
+                'REFERRER_MAX_REACHED': 'Referrer has reached maximum referrals'
+            };
+            return res.status(400).json({
+                error: result.error,
+                message: errorMessages[result.error] || 'Registration failed'
+            });
+        }
+
+        res.json({
+            success: true,
+            referrer: result.referrer.slice(0, 8) + '...',
+            message: 'Successfully registered! You earn 0.552% of your bets in ASDF, referrer earns 0.448%.'
+        });
+    } catch (e) {
+        console.error(`> [REFERRAL] Register error for ${user}:`, e.message);
+        res.status(500).json({ error: "REFERRAL_REGISTER_ERROR" });
+    }
+});
+
+// Get referral stats for a user (552 SYMMETRY - Gambler-Holder Alignment)
+app.get('/api/referral/stats', stateLimiter, async (req, res) => {
+    const userKey = req.query.user;
+
+    if (!userKey || !isValidSolanaAddress(userKey)) {
+        return res.status(400).json({ error: "INVALID_USER_ADDRESS" });
+    }
+
+    try {
+        const userData = await getUser(userKey);
+        const isReferrer = !!referralData.links[userKey];
+        const referrerData = referralData.links[userKey];
+        const referredBy = referralData.userToReferrer[userKey];
+        const pendingData = referralData.pendingRewards?.[userKey];
+
+        // Get ASDF price and user balance for claimable calculation
+        const asdfPrice = await getASDF_Price();
+        const userASDF_Balance = await getUserASDFBalance(userKey);
+
+        // Calculate pending rewards in SOL and ASDF
+        const pendingAsReferrerSOL = pendingData?.asReferrer || 0;
+        const pendingAsUserSOL = pendingData?.asUser || 0;
+        const totalPendingSOL = pendingAsReferrerSOL + pendingAsUserSOL;
+
+        // Convert SOL value to ASDF amount (SOL / ASDF_price_in_SOL)
+        const pendingASDF = asdfPrice > 0 ? totalPendingSOL / asdfPrice : 0;
+
+        // Claimable = min(pendingASDF, userBalance) - Proportional claim rule
+        const claimableASDF = Math.min(pendingASDF, userASDF_Balance);
+
+        res.json({
+            // As a referrer (parrain)
+            isReferrer: isReferrer,
+            referralCode: referrerData?.code || null,
+            referredUsers: referrerData?.referredUsers?.length || 0,
+            totalVolumeGenerated: referrerData?.totalVolumeGenerated || 0,
+            // As a referred user (filleul)
+            referredBy: referredBy ? referredBy.slice(0, 8) + '...' : null,
+            referredAt: userData.referredAt || null,
+            // Pending rewards (in SOL value, paid in ASDF)
+            pending: {
+                asReferrerSOL: pendingAsReferrerSOL,   // 0.448% earned from referrals
+                asUserSOL: pendingAsUserSOL,           // 0.552% rebate from own bets
+                totalSOL: totalPendingSOL,
+                totalASDF: Math.floor(pendingASDF),    // Converted at current price
+                totalClaimedASDF: pendingData?.totalClaimedASDF || 0
+            },
+            // Claim info (proportional to holding)
+            claim: {
+                userASDF_Balance: Math.floor(userASDF_Balance),
+                claimableASDF: Math.floor(claimableASDF),
+                claimRatio: REFERRAL_CONFIG.CLAIM_RATIO,
+                asdfPriceSOL: asdfPrice
+            },
+            // Config
+            userRebatePercent: REFERRAL_CONFIG.USER_REBATE_PERCENT * 100,      // 0.552%
+            referrerRewardPercent: REFERRAL_CONFIG.REFERRER_REWARD_PERCENT * 100, // 0.448%
+            minASDF: REFERRAL_CONFIG.MIN_ASDF_TO_REFER,
+            rewardCurrency: REFERRAL_CONFIG.REWARD_CURRENCY
+        });
+    } catch (e) {
+        console.error(`> [REFERRAL] Stats error for ${userKey}:`, e.message);
+        res.status(500).json({ error: "REFERRAL_STATS_ERROR" });
+    }
+});
+
+// Claim referral rewards (552 SYMMETRY - Proportional to ASDF holding)
+app.post('/api/referral/claim', stateLimiter, async (req, res) => {
+    const { user } = req.body;
+
+    if (!user || !isValidSolanaAddress(user)) {
+        return res.status(400).json({ error: "INVALID_USER_ADDRESS" });
+    }
+
+    try {
+        const pendingData = referralData.pendingRewards?.[user];
+        if (!pendingData) {
+            return res.status(400).json({ error: "NO_PENDING_REWARDS", message: "No rewards to claim" });
+        }
+
+        const totalPendingSOL = (pendingData.asReferrer || 0) + (pendingData.asUser || 0);
+        if (totalPendingSOL <= 0) {
+            return res.status(400).json({ error: "NO_PENDING_REWARDS", message: "No rewards to claim" });
+        }
+
+        // Get current ASDF price and user balance
+        const asdfPrice = await getASDF_Price();
+        if (asdfPrice <= 0) {
+            return res.status(500).json({ error: "PRICE_UNAVAILABLE", message: "Cannot fetch ASDF price" });
+        }
+
+        const userASDF_Balance = await getUserASDFBalance(user);
+
+        // Convert pending SOL to ASDF
+        const totalPendingASDF = totalPendingSOL / asdfPrice;
+
+        // Proportional claim: can only claim up to your ASDF balance
+        const claimableASDF = Math.min(totalPendingASDF, userASDF_Balance * REFERRAL_CONFIG.CLAIM_RATIO);
+
+        if (claimableASDF <= 0) {
+            return res.status(400).json({
+                error: "INSUFFICIENT_HOLDING",
+                message: "You must hold ASDF to claim rewards. Buy ASDF to unlock your rewards!",
+                pendingASDF: Math.floor(totalPendingASDF),
+                yourBalance: Math.floor(userASDF_Balance),
+                hint: "Claimable amount = min(pending rewards, your ASDF balance)"
+            });
+        }
+
+        // Calculate how much SOL value is being claimed
+        const claimedSOL = claimableASDF * asdfPrice;
+        const remainingSOL = totalPendingSOL - claimedSOL;
+
+        // TODO: Implement actual ASDF transfer from FEE_WALLET to user
+        // For now, we update the tracking and log the claim
+        // const txSignature = await transferASDF(FEE_WALLET, user, claimableASDF);
+
+        // Update pending rewards
+        const claimRatio = claimedSOL / totalPendingSOL;
+        referralData.pendingRewards[user].asReferrer *= (1 - claimRatio);
+        referralData.pendingRewards[user].asUser *= (1 - claimRatio);
+        referralData.pendingRewards[user].totalClaimedASDF =
+            (referralData.pendingRewards[user].totalClaimedASDF || 0) + claimableASDF;
+
+        await saveReferralData();
+
+        console.log(`> [REFERRAL] Claim: ${user.slice(0, 8)}... claimed ${Math.floor(claimableASDF)} ASDF (${claimedSOL.toFixed(6)} SOL value)`);
+
+        res.json({
+            success: true,
+            claimed: {
+                asdf: Math.floor(claimableASDF),
+                solValue: claimedSOL
+            },
+            remaining: {
+                solValue: remainingSOL,
+                asdf: Math.floor(remainingSOL / asdfPrice)
+            },
+            totalClaimed: Math.floor(referralData.pendingRewards[user].totalClaimedASDF),
+            message: `Successfully claimed ${Math.floor(claimableASDF).toLocaleString()} ASDF!`,
+            // TODO: Add txSignature when transfer is implemented
+            note: "ASDF transfer pending implementation - rewards tracked for future distribution"
+        });
+    } catch (e) {
+        console.error(`> [REFERRAL] Claim error for ${user}:`, e.message);
+        res.status(500).json({ error: "CLAIM_ERROR", message: e.message });
+    }
+});
+
+// Admin: Get global referral stats (552 SYMMETRY)
+app.get('/api/admin/referral/stats', (req, res) => {
+    const auth = req.headers['x-admin-secret'];
+    if (!auth || auth !== process.env.ADMIN_ACTION_PASSWORD) {
+        return res.status(403).json({ error: "UNAUTHORIZED" });
+    }
+
+    const totalReferrers = Object.keys(referralData.links).length;
+    const totalReferred = Object.keys(referralData.userToReferrer).length;
+
+    let totalVolumeGenerated = 0;
+    let totalPendingReferrerSOL = 0;
+    let totalPendingUserSOL = 0;
+    let totalClaimedASDF = 0;
+
+    for (const link of Object.values(referralData.links)) {
+        totalVolumeGenerated += link.totalVolumeGenerated || 0;
+    }
+
+    for (const pending of Object.values(referralData.pendingRewards || {})) {
+        totalPendingReferrerSOL += pending.asReferrer || 0;
+        totalPendingUserSOL += pending.asUser || 0;
+        totalClaimedASDF += pending.totalClaimedASDF || 0;
+    }
+
+    res.json({
+        totalReferrers,
+        totalReferred,
+        totalVolumeGenerated,                                      // Total bet volume from referred users
+        pendingRewards: {
+            referrerSOL: totalPendingReferrerSOL,                 // 0.448% pending to referrers
+            userRebateSOL: totalPendingUserSOL,                   // 0.552% pending to users
+            totalSOL: totalPendingReferrerSOL + totalPendingUserSOL
+        },
+        totalClaimedASDF,
+        // Config
+        userRebatePercent: REFERRAL_CONFIG.USER_REBATE_PERCENT * 100,      // 0.552%
+        referrerRewardPercent: REFERRAL_CONFIG.REFERRER_REWARD_PERCENT * 100, // 0.448%
+        minASDF: REFERRAL_CONFIG.MIN_ASDF_TO_REFER,
+        rewardCurrency: REFERRAL_CONFIG.REWARD_CURRENCY
+    });
 });
 
 // --- LOTTERY SCHEDULED TASK ---
