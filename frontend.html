@@ -1692,6 +1692,21 @@
                 console.log('[WS] Frame closed:', data.result, 'Winners:', data.winners);
                 // The STATE update will follow with full data
                 break;
+            case 'SERVER_SHUTDOWN':
+                // Server is shutting down
+                console.warn('[WS] Server shutdown:', data.message);
+                if (ui.statusText) {
+                    ui.statusText.innerText = "MAINTENANCE";
+                    ui.statusText.className = "text-yellow-500 animate-pulse";
+                }
+                if (ui.pauseOverlay) {
+                    ui.pauseOverlay.classList.remove('hidden');
+                }
+                if (ui.pauseText) {
+                    ui.pauseText.innerText = "Server maintenance in progress...";
+                    ui.pauseText.className = "text-yellow-500 font-bold text-xl";
+                }
+                break;
             default:
                 console.log('[WS] Unknown event:', event);
         }

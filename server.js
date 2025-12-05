@@ -2918,3 +2918,79 @@ server.listen(PORT, () => {
     log(`> WebSocket server ready on ws://localhost:${PORT}`, "SYS");
     loadAndInit();
 });
+
+// ===================
+// GRACEFUL SHUTDOWN
+// ===================
+let isShuttingDown = false;
+
+async function gracefulShutdown(signal) {
+    if (isShuttingDown) return;
+    isShuttingDown = true;
+
+    log(`\n> [SHUTDOWN] Received ${signal}. Starting graceful shutdown...`, "SYS");
+
+    // 1. Notify all WebSocket clients
+    const shutdownMsg = JSON.stringify({
+        event: 'SERVER_SHUTDOWN',
+        data: { reason: signal, message: 'Server is shutting down for maintenance' },
+        ts: Date.now()
+    });
+    for (const [ws] of wsClients) {
+        try {
+            if (ws.readyState === WebSocket.OPEN) {
+                ws.send(shutdownMsg);
+                ws.close(1001, 'Server shutting down');
+            }
+        } catch (e) { /* ignore */ }
+    }
+    log(`> [SHUTDOWN] Notified ${wsClients.size} WebSocket clients`, "SYS");
+
+    // 2. Stop accepting new connections
+    server.close(() => {
+        log(`> [SHUTDOWN] HTTP server closed`, "SYS");
+    });
+
+    // 3. Save current state
+    try {
+        await saveSystemState();
+        log(`> [SHUTDOWN] System state saved`, "SYS");
+    } catch (e) {
+        log(`> [SHUTDOWN] Failed to save state: ${e.message}`, "ERR");
+    }
+
+    // 4. Save lottery and referral data
+    try {
+        await saveLotteryState();
+        await saveReferralData();
+        log(`> [SHUTDOWN] Lottery & Referral data saved`, "SYS");
+    } catch (e) {
+        log(`> [SHUTDOWN] Failed to save lottery/referral: ${e.message}`, "ERR");
+    }
+
+    // 5. Wait for pending payouts (max 5 seconds)
+    if (currentQueueLength > 0) {
+        log(`> [SHUTDOWN] Waiting for ${currentQueueLength} pending payouts (max 5s)...`, "SYS");
+        await new Promise(resolve => setTimeout(resolve, 5000));
+    }
+
+    // 6. Final cleanup
+    log(`> [SHUTDOWN] Graceful shutdown complete. Goodbye!`, "SYS");
+    process.exit(0);
+}
+
+// Handle termination signals
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+// Handle uncaught exceptions (log but don't crash immediately)
+process.on('uncaughtException', (err) => {
+    log(`> [FATAL] Uncaught Exception: ${err.message}`, "ERR");
+    console.error(err.stack);
+    gracefulShutdown('UNCAUGHT_EXCEPTION');
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    log(`> [FATAL] Unhandled Rejection: ${reason}`, "ERR");
+    // Don't exit, just log - many unhandled rejections are recoverable
+});
