@@ -59,7 +59,8 @@ module.exports = {
     // ===================
     // GOLDEN RATIO (φ)
     // ===================
-    PHI: 1.618033988749895,
+    // φ = (1 + √5) / 2 - mathematically defined for maximum precision
+    PHI: (1 + Math.sqrt(5)) / 2,
 
     // ===================
     // REFERRAL CONFIG (552 SYMMETRY + Golden Ratio Decay)
