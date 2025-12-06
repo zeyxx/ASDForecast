@@ -9,7 +9,7 @@ module.exports = {
     // ===================
     // VERSION
     // ===================
-    BACKEND_VERSION: "150.0",
+    BACKEND_VERSION: "151.0",
 
     // ===================
     // SOLANA ADDRESSES
@@ -127,6 +127,20 @@ module.exports = {
             REFERRER_5: { name: 'Ambassador', description: 'Refer 5 users', icon: '🤝' },
             HODLER: { name: 'Diamond Hands', description: 'Hold ASDF for 4+ weeks', icon: '💎' }
         }
+    },
+
+    // ===================
+    // FEATURE FLAGS
+    // ===================
+    // Toggle features ON/OFF without code changes
+    // Set to false to disable a feature completely
+    FEATURES: {
+        WEBSOCKET_ENABLED: false,          // Real-time WebSocket updates (disable = HTTP polling only)
+        LOTTERY_ENABLED: false,            // Weekly ASDF lottery system
+        REFERRAL_ENABLED: false,           // Referral/affiliate system with Golden Ratio decay
+        BADGES_ENABLED: false,             // Achievement/badge system
+        EXTERNAL_TRACKER_ENABLED: false,   // External wallet tracking service
+        SENTIMENT_ENABLED: false           // Daily sentiment voting
     },
 
     // ===================

@@ -1,5 +1,74 @@
 # ASDForecast Changelog
 
+## Version 151.0 - WebSocket Feature Enhancements
+
+### Overview
+
+This update adds real-time WebSocket features for improved user experience and transparency.
+
+---
+
+## New WebSocket Events
+
+### 1. User Stats WS (Per-User Broadcast)
+
+**`USER_POSITION_UPDATE`** - Sent to user after bet confirmation
+- Current position (up/down shares, totalSOL)
+- Potential payout if UP/DOWN wins
+- Current odds and pool share percentage
+
+**`USER_FRAME_RESULT`** - Sent to user when frame closes
+- Personal result (won/lost)
+- Wagered amount, payout, profit/loss
+- Frame details (open, close, direction)
+
+### 2. Frame Result Animation
+
+Enhanced **`FRAME_CLOSE`** event with animation data:
+- `priceMovement` - Price difference (open vs close)
+- `percentChange` - Percentage price change
+- `payoutMultiplier` - Actual payout ratio
+- `topWinner` - Top winner pubKey and payout
+
+**Frontend:**
+- Full-screen result overlay (4s display)
+- Color flash effect (green=UP, red=DOWN, gray=FLAT)
+- Personal win/loss toast notification
+
+### 3. Leaderboard Live
+
+**`LEADERBOARD_UPDATE`** - Broadcast when leaderboard changes
+- Full leaderboard array with ranks
+- `changedPositions` - Rank changes with direction (up/down/new)
+- Triggers on: frame close, interval (60s)
+
+**Frontend:**
+- Animated rank changes (highlight moved rows)
+- Medal icons for top 3 positions
+
+### 4. Transaction Queue Dashboard
+
+**`PAYOUT_QUEUE_UPDATE`** - Broadcast during payout processing
+- `queueLength` - Pending batches
+- `processing` - Currently processing flag
+- `lastBatch` - Details of last processed batch
+- `recentPayouts` - Last 5 payout records
+
+**Frontend:**
+- Queue status indicator
+- Payout success toast notifications
+- Recent payouts list
+
+---
+
+## Technical Notes
+
+- `getUserPositionData(pubKey)` helper calculates user position/payouts
+- `updateLeaderboard(broadcast)` accepts broadcast flag for WS events
+- Animation CSS: `fadeOut`, `slideIn` keyframes added
+
+---
+
 ## Version 150.0 - User Features & Golden Ratio Decay
 
 ### Overview

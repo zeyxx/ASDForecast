@@ -16,122 +16,129 @@ const rateLimit = require('express-rate-limit');
 
 const app = express();
 const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
+
+// --- WEBSOCKET (CONDITIONAL) ---
+let wss = null;
+const wsClients = new Map(); // ws -> { pubKey, connectedAt, lastPong, priceAlerts }
+let wsClientCount = 0;
+
+if (config.FEATURES.WEBSOCKET_ENABLED) {
+    wss = new WebSocket.Server({ server });
+    console.log('> [SYS] WebSocket server ENABLED');
+
+    wss.on('connection', (ws, req) => {
+        const clientId = ++wsClientCount;
+        wsClients.set(ws, {
+            id: clientId,
+            pubKey: null,
+            connectedAt: Date.now(),
+            lastPong: Date.now(),
+            priceAlerts: []  // [{ id, targetPrice, direction: 'above'|'below', triggered: false }]
+        });
+        console.log(`> [WS] Client ${clientId} connected (total: ${wsClients.size})`);
+
+        // Handle client messages
+        ws.on('message', (data) => {
+            try {
+                const msg = JSON.parse(data.toString());
+                if (msg.type === 'AUTH' && msg.pubKey) {
+                    const client = wsClients.get(ws);
+                    if (client) {
+                        client.pubKey = msg.pubKey;
+                        console.log(`> [WS] Client ${client.id} authenticated: ${msg.pubKey.slice(0,8)}...`);
+                    }
+                } else if (msg.type === 'PING') {
+                    ws.send(JSON.stringify({ event: 'PONG', ts: Date.now() }));
+                } else if (msg.type === 'SET_PRICE_ALERT') {
+                    // Set a price alert: { type: 'SET_PRICE_ALERT', targetPrice: 150.00, direction: 'above'|'below' }
+                    const client = wsClients.get(ws);
+                    if (client && msg.targetPrice && msg.direction) {
+                        const alertId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+                        // Limit to 5 alerts per client
+                        if (client.priceAlerts.length >= 5) {
+                            ws.send(JSON.stringify({ event: 'PRICE_ALERT_ERROR', data: { error: 'MAX_ALERTS_REACHED', max: 5 }, ts: Date.now() }));
+                        } else {
+                            client.priceAlerts.push({
+                                id: alertId,
+                                targetPrice: parseFloat(msg.targetPrice),
+                                direction: msg.direction === 'below' ? 'below' : 'above',
+                                triggered: false,
+                                createdAt: Date.now()
+                            });
+                            ws.send(JSON.stringify({
+                                event: 'PRICE_ALERT_SET',
+                                data: { id: alertId, targetPrice: msg.targetPrice, direction: msg.direction },
+                                ts: Date.now()
+                            }));
+                        }
+                    }
+                } else if (msg.type === 'REMOVE_PRICE_ALERT') {
+                    // Remove alert: { type: 'REMOVE_PRICE_ALERT', id: 'abc123' }
+                    const client = wsClients.get(ws);
+                    if (client && msg.id) {
+                        client.priceAlerts = client.priceAlerts.filter(a => a.id !== msg.id);
+                        ws.send(JSON.stringify({ event: 'PRICE_ALERT_REMOVED', data: { id: msg.id }, ts: Date.now() }));
+                    }
+                } else if (msg.type === 'LIST_PRICE_ALERTS') {
+                    // List all active alerts
+                    const client = wsClients.get(ws);
+                    if (client) {
+                        ws.send(JSON.stringify({
+                            event: 'PRICE_ALERTS_LIST',
+                            data: { alerts: client.priceAlerts.filter(a => !a.triggered) },
+                            ts: Date.now()
+                        }));
+                    }
+                }
+            } catch (e) { /* ignore invalid messages */ }
+        });
+
+        ws.on('pong', () => {
+            const client = wsClients.get(ws);
+            if (client) client.lastPong = Date.now();
+        });
+
+        ws.on('close', () => {
+            const client = wsClients.get(ws);
+            if (client) {
+                console.log(`> [WS] Client ${client.id} disconnected (total: ${wsClients.size - 1})`);
+            }
+            wsClients.delete(ws);
+        });
+
+        ws.on('error', (err) => {
+            console.error(`> [WS] Client error:`, err.message);
+        });
+
+        // Send initial state
+        if (typeof cachedPublicState !== 'undefined' && cachedPublicState) {
+            ws.send(JSON.stringify({ event: 'STATE', data: cachedPublicState, ts: Date.now() }));
+        }
+    });
+
+    // Heartbeat interval - ping clients every 30s, close if no pong in 60s
+    setInterval(() => {
+        const now = Date.now();
+        for (const [ws, client] of wsClients) {
+            if (now - client.lastPong > 60000) {
+                console.log(`> [WS] Client ${client.id} timed out, closing`);
+                ws.terminate();
+            } else if (ws.readyState === WebSocket.OPEN) {
+                ws.ping();
+            }
+        }
+    }, config.WEBSOCKET.HEARTBEAT_INTERVAL);
+} else {
+    console.log('> [SYS] WebSocket server DISABLED (HTTP polling only)');
+}
 
 const stateMutex = new Mutex();
 const payoutMutex = new Mutex();
 const lotteryMutex = new Mutex();
 
-// --- WEBSOCKET CLIENT TRACKING ---
-const wsClients = new Map(); // ws -> { pubKey, connectedAt, lastPong, priceAlerts }
-let wsClientCount = 0;
-
-wss.on('connection', (ws, req) => {
-    const clientId = ++wsClientCount;
-    wsClients.set(ws, {
-        id: clientId,
-        pubKey: null,
-        connectedAt: Date.now(),
-        lastPong: Date.now(),
-        priceAlerts: []  // [{ id, targetPrice, direction: 'above'|'below', triggered: false }]
-    });
-    console.log(`> [WS] Client ${clientId} connected (total: ${wsClients.size})`);
-
-    // Handle client messages
-    ws.on('message', (data) => {
-        try {
-            const msg = JSON.parse(data.toString());
-            if (msg.type === 'AUTH' && msg.pubKey) {
-                const client = wsClients.get(ws);
-                if (client) {
-                    client.pubKey = msg.pubKey;
-                    console.log(`> [WS] Client ${client.id} authenticated: ${msg.pubKey.slice(0,8)}...`);
-                }
-            } else if (msg.type === 'PING') {
-                ws.send(JSON.stringify({ event: 'PONG', ts: Date.now() }));
-            } else if (msg.type === 'SET_PRICE_ALERT') {
-                // Set a price alert: { type: 'SET_PRICE_ALERT', targetPrice: 150.00, direction: 'above'|'below' }
-                const client = wsClients.get(ws);
-                if (client && msg.targetPrice && msg.direction) {
-                    const alertId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-                    // Limit to 5 alerts per client
-                    if (client.priceAlerts.length >= 5) {
-                        ws.send(JSON.stringify({ event: 'PRICE_ALERT_ERROR', data: { error: 'MAX_ALERTS_REACHED', max: 5 }, ts: Date.now() }));
-                    } else {
-                        client.priceAlerts.push({
-                            id: alertId,
-                            targetPrice: parseFloat(msg.targetPrice),
-                            direction: msg.direction === 'below' ? 'below' : 'above',
-                            triggered: false,
-                            createdAt: Date.now()
-                        });
-                        ws.send(JSON.stringify({
-                            event: 'PRICE_ALERT_SET',
-                            data: { id: alertId, targetPrice: msg.targetPrice, direction: msg.direction },
-                            ts: Date.now()
-                        }));
-                    }
-                }
-            } else if (msg.type === 'REMOVE_PRICE_ALERT') {
-                // Remove alert: { type: 'REMOVE_PRICE_ALERT', id: 'abc123' }
-                const client = wsClients.get(ws);
-                if (client && msg.id) {
-                    client.priceAlerts = client.priceAlerts.filter(a => a.id !== msg.id);
-                    ws.send(JSON.stringify({ event: 'PRICE_ALERT_REMOVED', data: { id: msg.id }, ts: Date.now() }));
-                }
-            } else if (msg.type === 'LIST_PRICE_ALERTS') {
-                // List all active alerts
-                const client = wsClients.get(ws);
-                if (client) {
-                    ws.send(JSON.stringify({
-                        event: 'PRICE_ALERTS_LIST',
-                        data: { alerts: client.priceAlerts.filter(a => !a.triggered) },
-                        ts: Date.now()
-                    }));
-                }
-            }
-        } catch (e) { /* ignore invalid messages */ }
-    });
-
-    ws.on('pong', () => {
-        const client = wsClients.get(ws);
-        if (client) client.lastPong = Date.now();
-    });
-
-    ws.on('close', () => {
-        const client = wsClients.get(ws);
-        if (client) {
-            console.log(`> [WS] Client ${client.id} disconnected (total: ${wsClients.size - 1})`);
-        }
-        wsClients.delete(ws);
-    });
-
-    ws.on('error', (err) => {
-        console.error(`> [WS] Client error:`, err.message);
-    });
-
-    // Send initial state
-    if (typeof cachedPublicState !== 'undefined' && cachedPublicState) {
-        ws.send(JSON.stringify({ event: 'STATE', data: cachedPublicState, ts: Date.now() }));
-    }
-});
-
-// Heartbeat interval - ping clients every 30s, close if no pong in 60s
-setInterval(() => {
-    const now = Date.now();
-    for (const [ws, client] of wsClients) {
-        if (now - client.lastPong > 60000) {
-            console.log(`> [WS] Client ${client.id} timed out, closing`);
-            ws.terminate();
-        } else if (ws.readyState === WebSocket.OPEN) {
-            ws.ping();
-        }
-    }
-}, config.WEBSOCKET.HEARTBEAT_INTERVAL);
-
-// Broadcast function - sends to all connected clients
+// Broadcast function - sends to all connected clients (no-op if WS disabled)
 function wsBroadcast(event, data, filterFn = null) {
-    if (wsClients.size === 0) return;
+    if (!config.FEATURES.WEBSOCKET_ENABLED || !wss || wsClients.size === 0) return;
     const message = JSON.stringify({ event, data, ts: Date.now() });
     for (const [ws, client] of wsClients) {
         if (ws.readyState === WebSocket.OPEN) {
@@ -142,13 +149,15 @@ function wsBroadcast(event, data, filterFn = null) {
     }
 }
 
-// Broadcast to specific user by pubKey
+// Broadcast to specific user by pubKey (no-op if WS disabled)
 function wsBroadcastToUser(pubKey, event, data) {
+    if (!config.FEATURES.WEBSOCKET_ENABLED) return;
     wsBroadcast(event, data, (client) => client.pubKey === pubKey);
 }
 
-// Check price alerts for all connected clients
+// Check price alerts for all connected clients (no-op if WS disabled)
 function checkPriceAlerts(currentPrice) {
+    if (!config.FEATURES.WEBSOCKET_ENABLED || !wss) return;
     for (const [ws, client] of wsClients) {
         if (!client.priceAlerts || client.priceAlerts.length === 0) continue;
         if (ws.readyState !== WebSocket.OPEN) continue;
@@ -182,6 +191,48 @@ function checkPriceAlerts(currentPrice) {
         // Clean up triggered alerts
         client.priceAlerts = client.priceAlerts.filter(a => !a.triggered);
     }
+}
+
+// Calculate user's current position and potential payouts
+function getUserPositionData(userPubKey) {
+    let upShares = 0, downShares = 0, totalInvested = 0;
+
+    gameState.bets.filter(b => b.user === userPubKey).forEach(bet => {
+        if (bet.direction === 'UP') upShares += bet.shares;
+        else downShares += bet.shares;
+        totalInvested += bet.costSol;
+    });
+
+    if (totalInvested === 0) return null;
+
+    const totalPool = gameState.bets.reduce((acc, b) => acc + b.costSol, 0);
+    const potSol = totalPool * config.PAYOUT_MULTIPLIER;
+
+    // Calculate real shares (excluding seed shares)
+    const realSharesUp = Math.max(0, gameState.poolShares.up - 50);
+    const realSharesDown = Math.max(0, gameState.poolShares.down - 50);
+
+    // Potential payouts if UP or DOWN wins
+    const payoutIfUp = realSharesUp > 0 ? (upShares / realSharesUp) * potSol : 0;
+    const payoutIfDown = realSharesDown > 0 ? (downShares / realSharesDown) * potSol : 0;
+
+    // Current odds (multiplier on investment)
+    const upMultiplier = realSharesUp > 0 ? (potSol / realSharesUp) / (totalInvested / upShares || 1) : 0;
+    const downMultiplier = realSharesDown > 0 ? (potSol / realSharesDown) / (totalInvested / downShares || 1) : 0;
+
+    return {
+        frameId: gameState.candleStartTime,
+        position: { up: upShares, down: downShares, totalSOL: totalInvested },
+        potentialPayout: { ifUp: payoutIfUp, ifDown: payoutIfDown },
+        currentOdds: {
+            upMultiplier: upMultiplier || 0,
+            downMultiplier: downMultiplier || 0
+        },
+        poolShare: {
+            upPercent: realSharesUp > 0 ? (upShares / realSharesUp) * 100 : 0,
+            downPercent: realSharesDown > 0 ? (downShares / realSharesDown) * 100 : 0
+        }
+    };
 }
 
 app.set('trust proxy', 1);
@@ -1385,8 +1436,21 @@ async function checkLotterySchedule() {
 }
 
 loadGlobalState();
-loadLotteryState();
-loadReferralData();
+
+// --- CONDITIONAL MODULE LOADING ---
+if (config.FEATURES.LOTTERY_ENABLED) {
+    loadLotteryState();
+    console.log('> [SYS] Lottery module ENABLED');
+} else {
+    console.log('> [SYS] Lottery module DISABLED');
+}
+
+if (config.FEATURES.REFERRAL_ENABLED) {
+    loadReferralData();
+    console.log('> [SYS] Referral module ENABLED');
+} else {
+    console.log('> [SYS] Referral module DISABLED');
+}
 
 // ROBUST ASDF SCANNER
 async function updateASDFPurchases() {
@@ -1448,7 +1512,7 @@ async function updateASDFPurchases() {
     } catch (e) { log(`> [ASDF] History Check Failed: ${e.message}`, "ERR"); }
 }
 
-async function updateLeaderboard() {
+async function updateLeaderboard(broadcast = false) {
     try {
         const files = await fs.readdir(USERS_DIR);
         const leaders = [];
@@ -1464,11 +1528,51 @@ async function updateLeaderboard() {
             } catch(e) { }
         }
         leaders.sort((a, b) => b.totalWon - a.totalWon);
-        globalLeaderboard = leaders.slice(0, 5); 
+
+        // Detect changes in top 5
+        const newLeaderboard = leaders.slice(0, 5);
+        const changedPositions = [];
+
+        if (broadcast && globalLeaderboard.length > 0) {
+            // Track rank changes
+            for (let i = 0; i < newLeaderboard.length; i++) {
+                const newEntry = newLeaderboard[i];
+                const oldRank = globalLeaderboard.findIndex(e => e.pubKey === newEntry.pubKey);
+                if (oldRank !== -1 && oldRank !== i) {
+                    changedPositions.push({
+                        pubKey: newEntry.pubKey.slice(0, 6) + '...' + newEntry.pubKey.slice(-4),
+                        oldRank: oldRank + 1,
+                        newRank: i + 1,
+                        direction: oldRank > i ? 'up' : 'down'
+                    });
+                } else if (oldRank === -1) {
+                    changedPositions.push({
+                        pubKey: newEntry.pubKey.slice(0, 6) + '...' + newEntry.pubKey.slice(-4),
+                        oldRank: null,
+                        newRank: i + 1,
+                        direction: 'new'
+                    });
+                }
+            }
+        }
+
+        globalLeaderboard = newLeaderboard;
         if (isInitialized) updatePublicStateCache();
+
+        // Broadcast leaderboard update if there were changes
+        if (broadcast && (changedPositions.length > 0 || globalLeaderboard.length > 0)) {
+            wsBroadcast('LEADERBOARD_UPDATE', {
+                leaderboard: globalLeaderboard.map((e, i) => ({
+                    ...e,
+                    pubKey: e.pubKey.slice(0, 6) + '...' + e.pubKey.slice(-4),
+                    rank: i + 1
+                })),
+                changedPositions: changedPositions
+            });
+        }
     } catch (e) { console.error("Leaderboard Error:", e.message); }
 }
-setInterval(updateLeaderboard, 60000); 
+setInterval(() => updateLeaderboard(true), 60000); 
 
 // --- EXTERNAL DATA TRACKING LOGIC (INTEGRATED) ---
 
@@ -1712,6 +1816,26 @@ async function processPayoutQueue() {
                         await atomicWrite(PAYOUT_HISTORY_FILE, payoutHistory);
                         await fs.appendFile(PAYOUT_MASTER_LOG, JSON.stringify(historyRecord) + '\n');
 
+                        // WebSocket: Broadcast payout queue update
+                        wsBroadcast('PAYOUT_QUEUE_UPDATE', {
+                            queueLength: queueData.length - 1,
+                            processing: true,
+                            lastBatch: {
+                                type: type,
+                                recipients: validRecipients.length,
+                                totalSOL: (totalBatchAmount / 1e9),
+                                status: 'success',
+                                signature: sig
+                            },
+                            recentPayouts: payoutHistory.slice(0, 5).map(h => ({
+                                frameId: h.frameId,
+                                recipients: h.recipientCount,
+                                totalSOL: parseFloat(h.totalAmount),
+                                signature: h.signature,
+                                timestamp: h.timestamp
+                            }))
+                        });
+
                         if (type === 'USER_PAYOUT') {
                             for (const item of validRecipients) {
                                 const uData = await getUser(item.pubKey);
@@ -1762,7 +1886,23 @@ async function processPayoutQueue() {
             }
         }
     } catch (e) { log(`> [QUEUE] Error: ${e}`, "ERR"); }
-    finally { release(); isProcessingQueue = false; }
+    finally {
+        release();
+        isProcessingQueue = false;
+        // Broadcast final queue status
+        wsBroadcast('PAYOUT_QUEUE_UPDATE', {
+            queueLength: currentQueueLength,
+            processing: false,
+            lastBatch: null,
+            recentPayouts: payoutHistory.slice(0, 5).map(h => ({
+                frameId: h.frameId,
+                recipients: h.recipientCount,
+                totalSOL: parseFloat(h.totalAmount),
+                signature: h.signature,
+                timestamp: h.timestamp
+            }))
+        });
+    }
 }
 
 setInterval(processPayoutQueue, 20000);
@@ -1939,19 +2079,21 @@ async function closeFrame(closePrice, closeTime) {
             userPositions[bet.user].sol += bet.costSol;
         });
 
-        // 552 SYMMETRY: Process referral rewards based on BET AMOUNT (not fees)
-        let totalReferrerRewards = 0;
-        let totalUserRebates = 0;
-        for (const [userPubKey, pos] of Object.entries(userPositions)) {
-            if (pos.sol > 0) {
-                const { referrerReward, userRebate } = await processReferralRewards(userPubKey, pos.sol);
-                totalReferrerRewards += referrerReward;
-                totalUserRebates += userRebate;
+        // 552 SYMMETRY: Process referral rewards based on BET AMOUNT (not fees) - CONDITIONAL
+        if (config.FEATURES.REFERRAL_ENABLED) {
+            let totalReferrerRewards = 0;
+            let totalUserRebates = 0;
+            for (const [userPubKey, pos] of Object.entries(userPositions)) {
+                if (pos.sol > 0) {
+                    const { referrerReward, userRebate } = await processReferralRewards(userPubKey, pos.sol);
+                    totalReferrerRewards += referrerReward;
+                    totalUserRebates += userRebate;
+                }
             }
-        }
-        if (totalReferrerRewards > 0 || totalUserRebates > 0) {
-            await saveReferralData();
-            log(`> [REFERRAL] Frame ${frameId}: ${totalUserRebates.toFixed(6)} SOL rebates + ${totalReferrerRewards.toFixed(6)} SOL referrer rewards`, "INFO");
+            if (totalReferrerRewards > 0 || totalUserRebates > 0) {
+                await saveReferralData();
+                log(`> [REFERRAL] Frame ${frameId}: ${totalUserRebates.toFixed(6)} SOL rebates + ${totalReferrerRewards.toFixed(6)} SOL referrer rewards`, "INFO");
+            }
         }
 
         if (result !== "FLAT") {
@@ -1985,15 +2127,41 @@ async function closeFrame(closePrice, closeTime) {
         if (historySummary.length > 100) historySummary = historySummary.slice(0, 100);
         await atomicWrite(HISTORY_FILE, historySummary);
 
-        // WebSocket: Broadcast frame close event to all clients
+        // Calculate animation data for FRAME_CLOSE
+        const priceMovement = closePrice - openPrice;
+        const percentChange = openPrice > 0 ? ((closePrice - openPrice) / openPrice) * 100 : 0;
+        const payoutMultiplier = frameSol > 0 && winnerCount > 0 ? payoutTotal / frameSol : 0;
+
+        // Find top winner by shares
+        let topWinner = null;
+        if (result !== "FLAT" && winnerCount > 0) {
+            const winningPool = result === "UP" ? realSharesUp : realSharesDown;
+            let maxShares = 0;
+            for (const [pk, pos] of Object.entries(userPositions)) {
+                const winShares = result === "UP" ? pos.up : pos.down;
+                const loseShares = result === "UP" ? pos.down : pos.up;
+                if (winShares > loseShares && winShares > maxShares) {
+                    maxShares = winShares;
+                    const userPayout = winningPool > 0 ? (winShares / winningPool) * payoutTotal : 0;
+                    topWinner = { pubKey: pk.slice(0, 6) + '...' + pk.slice(-4), payout: userPayout };
+                }
+            }
+        }
+
+        // WebSocket: Broadcast frame close event to all clients with animation data
         wsBroadcast('FRAME_CLOSE', {
             frameId: frameId,
             result: result,
             open: openPrice,
             close: closePrice,
+            priceMovement: priceMovement,
+            percentChange: percentChange,
             winners: winnerCount,
             totalPayout: payoutTotal,
-            totalSol: frameSol
+            totalSol: frameSol,
+            payoutMultiplier: payoutMultiplier,
+            winningPool: result === "UP" ? realSharesUp : (result === "DOWN" ? realSharesDown : 0),
+            topWinner: topWinner
         });
 
         // RECALCULATE TOTALS FROM HISTORY TO ENSURE SYNC
@@ -2001,7 +2169,9 @@ async function closeFrame(closePrice, closeTime) {
 
         const betsSnapshot = [...gameState.bets];
         const usersToUpdate = Object.entries(userPositions);
-        const USER_IO_BATCH_SIZE = 20; 
+        const USER_IO_BATCH_SIZE = 20;
+        const potSol = result !== "FLAT" ? frameSol * PAYOUT_MULTIPLIER : 0;
+
         for (let i = 0; i < usersToUpdate.length; i += USER_IO_BATCH_SIZE) {
             const batch = usersToUpdate.slice(i, i + USER_IO_BATCH_SIZE);
             await Promise.all(batch.map(async ([pubKey, pos]) => {
@@ -2021,8 +2191,36 @@ async function closeFrame(closePrice, closeTime) {
                     upShares: pos.up, downShares: pos.down, wagered: pos.sol
                 };
                 await saveUser(pubKey, userData);
-                // Check for new badges after updating stats
-                await checkAndAwardBadges(pubKey, userData, { outcome });
+                // Check for new badges after updating stats (CONDITIONAL)
+                if (config.FEATURES.BADGES_ENABLED) {
+                    await checkAndAwardBadges(pubKey, userData, { outcome });
+                }
+
+                // Calculate user's payout and send USER_FRAME_RESULT
+                let userPayout = 0;
+                if (outcome === "WIN" && potSol > 0) {
+                    const winningShares = result === "UP" ? rUp : rDown;
+                    const totalWinningShares = result === "UP" ? realSharesUp : realSharesDown;
+                    if (totalWinningShares > 0) {
+                        userPayout = (winningShares / totalWinningShares) * potSol;
+                    }
+                }
+                const profit = userPayout - pos.sol;
+
+                // WebSocket: Send frame result to this specific user
+                wsBroadcastToUser(pubKey, 'USER_FRAME_RESULT', {
+                    frameId: frameId,
+                    result: result,
+                    userDirection: userDir,
+                    userWon: outcome === "WIN",
+                    wagered: pos.sol,
+                    payout: userPayout,
+                    profit: profit,
+                    upShares: pos.up,
+                    downShares: pos.down,
+                    open: openPrice,
+                    close: closePrice
+                });
             }));
         }
 
@@ -2040,10 +2238,13 @@ async function closeFrame(closePrice, closeTime) {
         gameState.vaultStartBalance = vaultEndBalance; 
 
         await saveSystemState();
-        await queuePayouts(frameId, result, betsSnapshot, frameSol); 
+        await queuePayouts(frameId, result, betsSnapshot, frameSol);
+
+        // Update leaderboard and broadcast changes
+        await updateLeaderboard(true);
     } catch(e) {
         log(`> [ERR] CloseFrame Failed: ${e.message}`, "ERR");
-        gameState.isResetting = false; 
+        gameState.isResetting = false;
     }
 }
 
@@ -2233,38 +2434,41 @@ function updatePublicStateCache() {
         // Broadcast & Sentiment
         broadcast: gameState.broadcast,
         hourlySentiment: gameState.hourlySentiment,
-        // Lottery summary - 552 SYMMETRY
-        lottery: (() => {
-            // Dynamic calculation: 55.2% of collected ASDF goes to pool
-            const prizePool = Math.floor(globalStats.totalASDF * LOTTERY_CONFIG.ASDF_TO_POOL_PERCENT);
-            const isThresholdReached = prizePool >= LOTTERY_CONFIG.PRIZE_POOL_THRESHOLD;
-            return {
-                currentRound: lotteryState.currentRound,
-                nextDrawTime: lotteryState.nextDrawTime,
-                msUntilDraw: Math.max(0, lotteryState.nextDrawTime - now),
-                recentWinner: lotteryHistory.draws.length > 0 ? lotteryHistory.draws[0].winner : null,
-                recentPrize: lotteryHistory.draws.length > 0 ? lotteryHistory.draws[0].prize : null,
-                // 552 SYMMETRY: 55.2% of totalASDF = prize pool
-                prizePool: prizePool,
-                prizePoolThreshold: LOTTERY_CONFIG.PRIZE_POOL_THRESHOLD,
-                prizePoolPercent: Math.min(100, (prizePool / LOTTERY_CONFIG.PRIZE_POOL_THRESHOLD) * 100),
-                isThresholdReached: isThresholdReached,
-                // Transparency: show source data
-                totalASDF: Math.floor(globalStats.totalASDF),
-                allocationPercent: LOTTERY_CONFIG.ASDF_TO_POOL_PERCENT * 100
-            };
-        })(),
-        // Referral summary - 552 SYMMETRY + Golden Ratio Decay
-        referral: {
+        // Feature flags status (for frontend)
+        features: config.FEATURES
+    };
+
+    // Lottery summary - 552 SYMMETRY (CONDITIONAL)
+    if (config.FEATURES.LOTTERY_ENABLED) {
+        const prizePool = Math.floor(globalStats.totalASDF * LOTTERY_CONFIG.ASDF_TO_POOL_PERCENT);
+        const isThresholdReached = prizePool >= LOTTERY_CONFIG.PRIZE_POOL_THRESHOLD;
+        cachedPublicState.lottery = {
+            currentRound: lotteryState.currentRound,
+            nextDrawTime: lotteryState.nextDrawTime,
+            msUntilDraw: Math.max(0, lotteryState.nextDrawTime - now),
+            recentWinner: lotteryHistory.draws.length > 0 ? lotteryHistory.draws[0].winner : null,
+            recentPrize: lotteryHistory.draws.length > 0 ? lotteryHistory.draws[0].prize : null,
+            prizePool: prizePool,
+            prizePoolThreshold: LOTTERY_CONFIG.PRIZE_POOL_THRESHOLD,
+            prizePoolPercent: Math.min(100, (prizePool / LOTTERY_CONFIG.PRIZE_POOL_THRESHOLD) * 100),
+            isThresholdReached: isThresholdReached,
+            totalASDF: Math.floor(globalStats.totalASDF),
+            allocationPercent: LOTTERY_CONFIG.ASDF_TO_POOL_PERCENT * 100
+        };
+    }
+
+    // Referral summary - 552 SYMMETRY + Golden Ratio Decay (CONDITIONAL)
+    if (config.FEATURES.REFERRAL_ENABLED) {
+        cachedPublicState.referral = {
             totalReferrers: Object.keys(referralData.links).length,
             totalReferred: Object.keys(referralData.userToReferrer).length,
-            userRebatePercent: REFERRAL_CONFIG.USER_REBATE_PERCENT * 100,      // 0.552% fixed (filleul)
-            baseReferrerRate: REFERRAL_CONFIG.BASE_REFERRER_RATE * 100,        // 0.448% base (parrain)
-            referrerDecay: 'golden_ratio',  // Rate decays with φ as referrals increase
+            userRebatePercent: REFERRAL_CONFIG.USER_REBATE_PERCENT * 100,
+            baseReferrerRate: REFERRAL_CONFIG.BASE_REFERRER_RATE * 100,
+            referrerDecay: 'golden_ratio',
             minASDF: REFERRAL_CONFIG.MIN_ASDF_TO_REFER,
             rewardCurrency: REFERRAL_CONFIG.REWARD_CURRENCY
-        }
-    };
+        };
+    }
 
     // WebSocket: Broadcast state to all connected clients
     wsBroadcast('STATE', cachedPublicState);
@@ -2559,8 +2763,10 @@ app.post('/api/verify-bet', betLimiter, async (req, res) => {
 
         getUser(userPubKey).then(userData => { userData.totalSol += solAmount; saveUser(userPubKey, userData); });
 
-        // Record daily activity for lottery eligibility
-        recordUserActivity(userPubKey);
+        // Record daily activity for lottery eligibility (CONDITIONAL)
+        if (config.FEATURES.LOTTERY_ENABLED) {
+            recordUserActivity(userPubKey);
+        }
 
         gameState.bets.push({ signature, user: userPubKey, direction, costSol: solAmount, entryPrice: price, shares: sharesReceived, timestamp: Date.now() });
         gameState.recentTrades.unshift({ user: userPubKey, direction, shares: sharesReceived, time: Date.now() });
@@ -2572,6 +2778,13 @@ app.post('/api/verify-bet', betLimiter, async (req, res) => {
         updatePublicStateCache();
         await saveSystemState();
         log(`> [TRADE] ${userPubKey.slice(0,6)} bought ${sharesReceived.toFixed(2)} ${direction} for ${solAmount} SOL`, "TRADE");
+
+        // WebSocket: Send position update to the user
+        const positionData = getUserPositionData(userPubKey);
+        if (positionData) {
+            wsBroadcastToUser(userPubKey, 'USER_POSITION_UPDATE', positionData);
+        }
+
         res.json({ success: true, shares: sharesReceived, price: price });
     } catch (e) { 
         log(`> [ERR] Trade Error: ${e}`, "ERR");
@@ -2620,99 +2833,102 @@ app.post('/api/admin/broadcast', async (req, res) => {
     finally { release(); }
 });
 
-// --- LOTTERY ENDPOINTS ---
-app.get('/api/lottery/status', stateLimiter, async (req, res) => {
-    try {
-        const supply = await getCirculatingSupply();
-        const threshold = supply * LOTTERY_CONFIG.ELIGIBILITY_PERCENT;
+// --- LOTTERY ENDPOINTS (CONDITIONAL) ---
+if (config.FEATURES.LOTTERY_ENABLED) {
+    app.get('/api/lottery/status', stateLimiter, async (req, res) => {
+        try {
+            const supply = await getCirculatingSupply();
+            const threshold = supply * LOTTERY_CONFIG.ELIGIBILITY_PERCENT;
 
-        res.json({
-            currentRound: lotteryState.currentRound,
-            nextDrawTime: lotteryState.nextDrawTime,
-            msUntilDraw: Math.max(0, lotteryState.nextDrawTime - Date.now()),
-            lastDrawTime: lotteryState.lastDrawTime,
-            eligibilityThreshold: threshold,
-            circulatingSupply: supply,
-            config: {
-                eligibilityPercent: LOTTERY_CONFIG.ELIGIBILITY_PERCENT * 100,
-                maxTickets: LOTTERY_CONFIG.MAX_TICKETS,
-                basePrize: LOTTERY_CONFIG.BASE_PRIZE,
-                prizePerTicket: LOTTERY_CONFIG.PRIZE_PER_TICKET
-            },
-            recentWinner: lotteryHistory.draws.length > 0 ? {
-                winner: lotteryHistory.draws[0].winner,
-                prize: lotteryHistory.draws[0].prize,
-                round: lotteryHistory.draws[0].round,
-                timestamp: lotteryHistory.draws[0].timestamp
-            } : null
-        });
-    } catch (e) {
-        console.error("> [LOTTERY] Status error:", e.message);
-        res.status(500).json({ error: "LOTTERY_STATUS_ERROR" });
-    }
-});
-
-app.get('/api/lottery/eligibility', stateLimiter, async (req, res) => {
-    const userKey = req.query.user;
-
-    if (!userKey || !isValidSolanaAddress(userKey)) {
-        return res.status(400).json({ error: "INVALID_USER_ADDRESS" });
-    }
-
-    try {
-        const userData = await updateUserLotteryStatus(userKey);
-        const tickets = calculateTickets(userData);
-
-        const supply = await getCirculatingSupply();
-        const threshold = supply * LOTTERY_CONFIG.ELIGIBILITY_PERCENT;
-
-        res.json({
-            isEligible: userData.lottery?.isEligible || false,
-            balance: userData.lottery?.currentBalance || 0,
-            threshold: threshold,
-            tickets: tickets.effective,
-            baseTickets: tickets.base,
-            activityMultiplier: tickets.multiplier,
-            activeDays: tickets.activeDays,
-            activityWindowDays: LOTTERY_CONFIG.ACTIVITY_WINDOW_DAYS,
-            maxTickets: LOTTERY_CONFIG.MAX_TICKETS,
-            weeksHolding: userData.lottery?.weeksHolding || 0,
-            firstSeenHolding: userData.lottery?.firstSeenHolding,
-            wins: userData.lottery?.wins || [],
-            participatedRounds: userData.lottery?.participatedRounds || []
-        });
-    } catch (e) {
-        console.error(`> [LOTTERY] Eligibility error for ${userKey}:`, e.message);
-        res.status(500).json({ error: "ELIGIBILITY_CHECK_ERROR" });
-    }
-});
-
-app.get('/api/lottery/history', stateLimiter, (req, res) => {
-    const limit = Math.min(parseInt(req.query.limit) || 10, 52);
-
-    res.json({
-        draws: lotteryHistory.draws.slice(0, limit),
-        totalDraws: lotteryHistory.draws.length
+            res.json({
+                currentRound: lotteryState.currentRound,
+                nextDrawTime: lotteryState.nextDrawTime,
+                msUntilDraw: Math.max(0, lotteryState.nextDrawTime - Date.now()),
+                lastDrawTime: lotteryState.lastDrawTime,
+                eligibilityThreshold: threshold,
+                circulatingSupply: supply,
+                config: {
+                    eligibilityPercent: LOTTERY_CONFIG.ELIGIBILITY_PERCENT * 100,
+                    maxTickets: LOTTERY_CONFIG.MAX_TICKETS,
+                    basePrize: LOTTERY_CONFIG.BASE_PRIZE,
+                    prizePerTicket: LOTTERY_CONFIG.PRIZE_PER_TICKET
+                },
+                recentWinner: lotteryHistory.draws.length > 0 ? {
+                    winner: lotteryHistory.draws[0].winner,
+                    prize: lotteryHistory.draws[0].prize,
+                    round: lotteryHistory.draws[0].round,
+                    timestamp: lotteryHistory.draws[0].timestamp
+                } : null
+            });
+        } catch (e) {
+            console.error("> [LOTTERY] Status error:", e.message);
+            res.status(500).json({ error: "LOTTERY_STATUS_ERROR" });
+        }
     });
-});
 
-app.post('/api/admin/lottery/draw', async (req, res) => {
-    const auth = req.headers['x-admin-secret'];
-    if (!auth || auth !== process.env.ADMIN_ACTION_PASSWORD) {
-        return res.status(403).json({ error: "UNAUTHORIZED" });
-    }
+    app.get('/api/lottery/eligibility', stateLimiter, async (req, res) => {
+        const userKey = req.query.user;
 
-    try {
-        console.log("> [ADMIN] Manual lottery draw triggered");
-        const result = await executeLotteryDraw();
-        res.json(result);
-    } catch (e) {
-        console.error("> [ADMIN] Lottery draw error:", e.message);
-        res.status(500).json({ error: "DRAW_ERROR", message: e.message });
-    }
-});
+        if (!userKey || !isValidSolanaAddress(userKey)) {
+            return res.status(400).json({ error: "INVALID_USER_ADDRESS" });
+        }
 
-// --- REFERRAL API (552 SYMMETRY) ---
+        try {
+            const userData = await updateUserLotteryStatus(userKey);
+            const tickets = calculateTickets(userData);
+
+            const supply = await getCirculatingSupply();
+            const threshold = supply * LOTTERY_CONFIG.ELIGIBILITY_PERCENT;
+
+            res.json({
+                isEligible: userData.lottery?.isEligible || false,
+                balance: userData.lottery?.currentBalance || 0,
+                threshold: threshold,
+                tickets: tickets.effective,
+                baseTickets: tickets.base,
+                activityMultiplier: tickets.multiplier,
+                activeDays: tickets.activeDays,
+                activityWindowDays: LOTTERY_CONFIG.ACTIVITY_WINDOW_DAYS,
+                maxTickets: LOTTERY_CONFIG.MAX_TICKETS,
+                weeksHolding: userData.lottery?.weeksHolding || 0,
+                firstSeenHolding: userData.lottery?.firstSeenHolding,
+                wins: userData.lottery?.wins || [],
+                participatedRounds: userData.lottery?.participatedRounds || []
+            });
+        } catch (e) {
+            console.error(`> [LOTTERY] Eligibility error for ${userKey}:`, e.message);
+            res.status(500).json({ error: "ELIGIBILITY_CHECK_ERROR" });
+        }
+    });
+
+    app.get('/api/lottery/history', stateLimiter, (req, res) => {
+        const limit = Math.min(parseInt(req.query.limit) || 10, 52);
+
+        res.json({
+            draws: lotteryHistory.draws.slice(0, limit),
+            totalDraws: lotteryHistory.draws.length
+        });
+    });
+
+    app.post('/api/admin/lottery/draw', async (req, res) => {
+        const auth = req.headers['x-admin-secret'];
+        if (!auth || auth !== process.env.ADMIN_ACTION_PASSWORD) {
+            return res.status(403).json({ error: "UNAUTHORIZED" });
+        }
+
+        try {
+            console.log("> [ADMIN] Manual lottery draw triggered");
+            const result = await executeLotteryDraw();
+            res.json(result);
+        } catch (e) {
+            console.error("> [ADMIN] Lottery draw error:", e.message);
+            res.status(500).json({ error: "DRAW_ERROR", message: e.message });
+        }
+    });
+} // END LOTTERY ENDPOINTS
+
+// --- REFERRAL API (CONDITIONAL - 552 SYMMETRY) ---
+if (config.FEATURES.REFERRAL_ENABLED) {
 
 // Get or create referral code for a user
 app.get('/api/referral/code', stateLimiter, async (req, res) => {
@@ -2965,6 +3181,8 @@ app.post('/api/referral/claim', claimLimiter, async (req, res) => {
     }
 });
 
+} // END REFERRAL ENDPOINTS
+
 // ===================
 // USER BET HISTORY API
 // ===================
@@ -3119,47 +3337,49 @@ async function checkAndAwardBadges(pubKey, userData, context = {}) {
     return newBadges;
 }
 
-// Get user's badges
-app.get('/api/user/badges', stateLimiter, async (req, res) => {
-    const userKey = req.query.user;
+// Get user's badges (CONDITIONAL)
+if (config.FEATURES.BADGES_ENABLED) {
+    app.get('/api/user/badges', stateLimiter, async (req, res) => {
+        const userKey = req.query.user;
 
-    if (!userKey || !isValidSolanaAddress(userKey)) {
-        return res.status(400).json({ error: "INVALID_USER_ADDRESS" });
-    }
+        if (!userKey || !isValidSolanaAddress(userKey)) {
+            return res.status(400).json({ error: "INVALID_USER_ADDRESS" });
+        }
 
-    try {
-        const userData = await getUser(userKey);
-        const userBadges = userData.badges || [];
+        try {
+            const userData = await getUser(userKey);
+            const userBadges = userData.badges || [];
 
-        // Enrich badges with metadata
-        const enrichedBadges = userBadges.map(badge => ({
-            ...badge,
-            ...BADGES[badge.id]
-        }));
+            // Enrich badges with metadata
+            const enrichedBadges = userBadges.map(badge => ({
+                ...badge,
+                ...BADGES[badge.id]
+            }));
 
-        // List all available badges with earned status
-        const allBadges = Object.entries(BADGES).map(([id, info]) => {
-            const earned = userBadges.find(b => b.id === id);
-            return {
-                id,
-                ...info,
-                earned: !!earned,
-                earnedAt: earned?.earnedAt || null
-            };
-        });
+            // List all available badges with earned status
+            const allBadges = Object.entries(BADGES).map(([id, info]) => {
+                const earned = userBadges.find(b => b.id === id);
+                return {
+                    id,
+                    ...info,
+                    earned: !!earned,
+                    earnedAt: earned?.earnedAt || null
+                };
+            });
 
-        res.json({
-            user: userKey,
-            earned: enrichedBadges,
-            earnedCount: enrichedBadges.length,
-            totalBadges: Object.keys(BADGES).length,
-            allBadges
-        });
-    } catch (e) {
-        console.error(`> [USER] Badges error for ${userKey}:`, e.message);
-        res.status(500).json({ error: "BADGES_ERROR" });
-    }
-});
+            res.json({
+                user: userKey,
+                earned: enrichedBadges,
+                earnedCount: enrichedBadges.length,
+                totalBadges: Object.keys(BADGES).length,
+                allBadges
+            });
+        } catch (e) {
+            console.error(`> [USER] Badges error for ${userKey}:`, e.message);
+            res.status(500).json({ error: "BADGES_ERROR" });
+        }
+    });
+} // END BADGES ENDPOINT
 
 // Get user's overall stats (quick endpoint)
 app.get('/api/user/stats', stateLimiter, async (req, res) => {
@@ -3206,49 +3426,51 @@ app.get('/api/user/stats', stateLimiter, async (req, res) => {
     }
 });
 
-// Admin: Get global referral stats (552 SYMMETRY)
-app.get('/api/admin/referral/stats', (req, res) => {
-    const auth = req.headers['x-admin-secret'];
-    if (!auth || auth !== process.env.ADMIN_ACTION_PASSWORD) {
-        return res.status(403).json({ error: "UNAUTHORIZED" });
-    }
+// Admin: Get global referral stats (CONDITIONAL - 552 SYMMETRY)
+if (config.FEATURES.REFERRAL_ENABLED) {
+    app.get('/api/admin/referral/stats', (req, res) => {
+        const auth = req.headers['x-admin-secret'];
+        if (!auth || auth !== process.env.ADMIN_ACTION_PASSWORD) {
+            return res.status(403).json({ error: "UNAUTHORIZED" });
+        }
 
-    const totalReferrers = Object.keys(referralData.links).length;
-    const totalReferred = Object.keys(referralData.userToReferrer).length;
+        const totalReferrers = Object.keys(referralData.links).length;
+        const totalReferred = Object.keys(referralData.userToReferrer).length;
 
-    let totalVolumeGenerated = 0;
-    let totalPendingReferrerSOL = 0;
-    let totalPendingUserSOL = 0;
-    let totalClaimedASDF = 0;
+        let totalVolumeGenerated = 0;
+        let totalPendingReferrerSOL = 0;
+        let totalPendingUserSOL = 0;
+        let totalClaimedASDF = 0;
 
-    for (const link of Object.values(referralData.links)) {
-        totalVolumeGenerated += link.totalVolumeGenerated || 0;
-    }
+        for (const link of Object.values(referralData.links)) {
+            totalVolumeGenerated += link.totalVolumeGenerated || 0;
+        }
 
-    for (const pending of Object.values(referralData.pendingRewards || {})) {
-        totalPendingReferrerSOL += pending.asReferrer || 0;
-        totalPendingUserSOL += pending.asUser || 0;
-        totalClaimedASDF += pending.totalClaimedASDF || 0;
-    }
+        for (const pending of Object.values(referralData.pendingRewards || {})) {
+            totalPendingReferrerSOL += pending.asReferrer || 0;
+            totalPendingUserSOL += pending.asUser || 0;
+            totalClaimedASDF += pending.totalClaimedASDF || 0;
+        }
 
-    res.json({
-        totalReferrers,
-        totalReferred,
-        totalVolumeGenerated,                                      // Total bet volume from referred users
-        pendingRewards: {
-            referrerSOL: totalPendingReferrerSOL,                 // 0.448% pending to referrers
-            userRebateSOL: totalPendingUserSOL,                   // 0.552% pending to users
-            totalSOL: totalPendingReferrerSOL + totalPendingUserSOL
-        },
-        totalClaimedASDF,
-        // Config - Golden Ratio Decay
-        userRebatePercent: REFERRAL_CONFIG.USER_REBATE_PERCENT * 100,      // 0.552% fixed
-        baseReferrerRate: REFERRAL_CONFIG.BASE_REFERRER_RATE * 100,        // 0.448% base (decays with φ)
-        referrerDecay: 'golden_ratio',
-        minASDF: REFERRAL_CONFIG.MIN_ASDF_TO_REFER,
-        rewardCurrency: REFERRAL_CONFIG.REWARD_CURRENCY
+        res.json({
+            totalReferrers,
+            totalReferred,
+            totalVolumeGenerated,                                      // Total bet volume from referred users
+            pendingRewards: {
+                referrerSOL: totalPendingReferrerSOL,                 // 0.448% pending to referrers
+                userRebateSOL: totalPendingUserSOL,                   // 0.552% pending to users
+                totalSOL: totalPendingReferrerSOL + totalPendingUserSOL
+            },
+            totalClaimedASDF,
+            // Config - Golden Ratio Decay
+            userRebatePercent: REFERRAL_CONFIG.USER_REBATE_PERCENT * 100,      // 0.552% fixed
+            baseReferrerRate: REFERRAL_CONFIG.BASE_REFERRER_RATE * 100,        // 0.448% base (decays with φ)
+            referrerDecay: 'golden_ratio',
+            minASDF: REFERRAL_CONFIG.MIN_ASDF_TO_REFER,
+            rewardCurrency: REFERRAL_CONFIG.REWARD_CURRENCY
+        });
     });
-});
+} // END ADMIN REFERRAL STATS
 
 // Admin: Comprehensive dashboard stats
 app.get('/api/admin/stats', async (req, res) => {
@@ -3364,15 +3586,20 @@ app.get('/api/admin/stats', async (req, res) => {
     }
 });
 
-// --- LOTTERY SCHEDULED TASK ---
-// Check every hour if it's time for a draw
-setInterval(checkLotterySchedule, 60 * 60 * 1000);
-// Also check on startup after a short delay
-setTimeout(checkLotterySchedule, 10000);
+// --- LOTTERY SCHEDULED TASK (CONDITIONAL) ---
+if (config.FEATURES.LOTTERY_ENABLED) {
+    // Check every hour if it's time for a draw
+    setInterval(checkLotterySchedule, 60 * 60 * 1000);
+    // Also check on startup after a short delay
+    setTimeout(checkLotterySchedule, 10000);
+}
 
 server.listen(PORT, () => {
     log(`> ASDForecast Engine v${BACKEND_VERSION} running on ${PORT}`, "SYS");
-    log(`> WebSocket server ready on ws://localhost:${PORT}`, "SYS");
+    if (config.FEATURES.WEBSOCKET_ENABLED) {
+        log(`> WebSocket server ready on ws://localhost:${PORT}`, "SYS");
+    }
+    log(`> Features: WS=${config.FEATURES.WEBSOCKET_ENABLED} LOTTERY=${config.FEATURES.LOTTERY_ENABLED} REFERRAL=${config.FEATURES.REFERRAL_ENABLED} BADGES=${config.FEATURES.BADGES_ENABLED}`, "SYS");
     loadAndInit();
 });
 

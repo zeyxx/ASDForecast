@@ -87,6 +87,19 @@
     .sent-btn-up:hover:not(:disabled) { border-color: #22c55e; }
     .sent-btn-down:hover:not(:disabled) { border-color: #ef4444; }
     .sent-img { width: 100%; height: 100%; object-fit: cover; }
+
+    /* Frame result animations */
+    @keyframes fadeOut {
+        from { opacity: 0.3; }
+        to { opacity: 0; }
+    }
+    @keyframes slideIn {
+        from { transform: translateY(20px); opacity: 0; }
+        to { transform: translateY(0); opacity: 1; }
+    }
+    #frame-result-overlay > div {
+        animation: slideIn 0.3s ease-out;
+    }
 </style>
 
 <div id="asd-app">
@@ -297,8 +310,8 @@
             </div>
         </div>
 
-        <!-- LOTTERY SECTION -->
-        <div class="panel p-6 bg-black/40 mb-8 border-2 border-yellow-600">
+        <!-- LOTTERY SECTION (hidden if feature disabled) -->
+        <div id="lottery-section" class="panel p-6 bg-black/40 mb-8 border-2 border-yellow-600">
             <div class="flex justify-between items-center mb-4">
                 <h3 class="text-lg font-bold text-yellow-400">🎟️ Weekly ASDF Lottery</h3>
                 <span class="text-xs font-mono bg-yellow-900/30 px-2 py-1 rounded text-yellow-300">Round #<span id="lottery-round">--</span></span>
@@ -373,8 +386,8 @@
             </div>
         </div>
 
-        <!-- REFERRAL SECTION (552 SYMMETRY) -->
-        <div class="panel p-6 bg-black/40 mb-8 border-2 border-cyan-600">
+        <!-- REFERRAL SECTION (552 SYMMETRY) - hidden if feature disabled -->
+        <div id="referral-section" class="panel p-6 bg-black/40 mb-8 border-2 border-cyan-600">
             <div class="flex justify-between items-center mb-4">
                 <h3 class="text-lg font-bold text-cyan-400">🔗 Referral Rewards</h3>
                 <span class="text-xs font-mono bg-cyan-900/30 px-2 py-1 rounded text-cyan-300">Earn ASDF</span>
@@ -557,6 +570,60 @@
     let ws = null;
     let wsReconnectAttempts = 0;
     const WS_RECONNECT_MAX_DELAY = 30000; // 30s max backoff
+
+    // Feature flags (synced from server state.features)
+    let enabledFeatures = {
+        WEBSOCKET_ENABLED: true,
+        LOTTERY_ENABLED: true,
+        REFERRAL_ENABLED: true,
+        BADGES_ENABLED: true,
+        SENTIMENT_ENABLED: true
+    };
+    let featuresInitialized = false;
+
+    // Safe fetch wrapper with fallback for disabled features
+    async function safeFetch(url, options = {}, fallback = null) {
+        try {
+            const res = await fetch(url, options);
+            if (res.status === 404) {
+                console.warn(`[Feature] Endpoint unavailable: ${url}`);
+                return fallback;
+            }
+            if (!res.ok) return fallback;
+            return await res.json();
+        } catch (e) {
+            console.warn(`[Feature] Fetch failed: ${url}`, e.message);
+            return fallback;
+        }
+    }
+
+    // Update UI visibility based on feature flags
+    function updateFeatureVisibility(features) {
+        if (!features) return;
+
+        // Update local cache
+        enabledFeatures = { ...enabledFeatures, ...features };
+
+        // Hide/show lottery section
+        const lotterySection = document.getElementById('lottery-section');
+        if (lotterySection) {
+            lotterySection.style.display = features.LOTTERY_ENABLED ? '' : 'none';
+        }
+
+        // Hide/show referral section
+        const referralSection = document.getElementById('referral-section');
+        if (referralSection) {
+            referralSection.style.display = features.REFERRAL_ENABLED ? '' : 'none';
+        }
+
+        // Hide/show sentiment voting (if there's a dedicated section)
+        const sentimentSection = document.getElementById('sentiment-section');
+        if (sentimentSection) {
+            sentimentSection.style.display = features.SENTIMENT_ENABLED ? '' : 'none';
+        }
+
+        featuresInitialized = true;
+    }
 
     window.addEventListener('load', () => {
         if (window.solanaWeb3) {
@@ -1055,6 +1122,9 @@
     }
 
     async function fetchLotteryEligibility() {
+        // Skip if lottery feature is disabled
+        if (!enabledFeatures.LOTTERY_ENABLED) return;
+
         if (!state.pubKey) {
             ui.lotteryStatus.innerText = 'Connect wallet to check';
             ui.lotteryStatus.className = 'text-gray-400';
@@ -1126,6 +1196,9 @@
     let referralStatsInterval = null;
 
     async function fetchReferralStats() {
+        // Skip if referral feature is disabled
+        if (!enabledFeatures.REFERRAL_ENABLED) return;
+
         if (!state.pubKey) {
             // Reset UI to disconnected state
             if (ui.referralCodeDisplay) ui.referralCodeDisplay.value = '--------';
@@ -1383,6 +1456,11 @@
             ui.topStatus.className = "flex items-center gap-2 text-xs font-mono bg-black/40 px-3 py-2 rounded border border-green-900/50 transition-colors duration-500";
             if(ui.lastUpdated && data.lastPriceTimestamp) ui.lastUpdated.innerText = `Price Data: ${new Date(data.lastPriceTimestamp).toLocaleTimeString()}`;
             if(data.backendVersion) ui.backendVersion.innerText = `v${data.backendVersion}`;
+
+            // FEATURE FLAGS: Update UI visibility based on server config
+            if (data.features && !featuresInitialized) {
+                updateFeatureVisibility(data.features);
+            }
 
             // --- STATE SYNC ---
             state.isResetting = data.isResetting;
@@ -1688,9 +1766,32 @@
                 }
                 break;
             case 'FRAME_CLOSE':
-                // Frame result notification
+                // Frame result with animation
                 console.log('[WS] Frame closed:', data.result, 'Winners:', data.winners);
-                // The STATE update will follow with full data
+                showFrameResultAnimation(data);
+                break;
+            case 'USER_POSITION_UPDATE':
+                // User's current position updated
+                console.log('[WS] Position update:', data.position);
+                if (state.userPosition) {
+                    state.userPosition = data;
+                    updateUserPositionDisplay(data);
+                }
+                break;
+            case 'USER_FRAME_RESULT':
+                // User's personal result for the frame
+                console.log('[WS] Your result:', data.userWon ? 'WIN' : 'LOSS', 'Profit:', data.profit);
+                showUserFrameResult(data);
+                break;
+            case 'LEADERBOARD_UPDATE':
+                // Real-time leaderboard update
+                console.log('[WS] Leaderboard update:', data.changedPositions?.length, 'changes');
+                handleLeaderboardUpdate(data);
+                break;
+            case 'PAYOUT_QUEUE_UPDATE':
+                // Payout queue status update
+                console.log('[WS] Queue update:', data.queueLength, 'pending, processing:', data.processing);
+                handlePayoutQueueUpdate(data);
                 break;
             case 'SERVER_SHUTDOWN':
                 // Server is shutting down
@@ -1875,10 +1976,167 @@
                 alert(d.error);
             }
 
-        } catch(e) { 
-            console.error(e); 
+        } catch(e) {
+            console.error(e);
             alert("Tx Failed");
         } finally { btn.innerHTML = old; btn.disabled = false; updateCosts(); } // Re-enable and update costs/disable state
 
+    }
+
+    // ============== FRAME RESULT ANIMATION ==============
+    function showFrameResultAnimation(data) {
+        // Create overlay element
+        const overlay = document.createElement('div');
+        overlay.id = 'frame-result-overlay';
+        overlay.className = 'fixed inset-0 z-50 flex items-center justify-center pointer-events-none';
+
+        const isUp = data.result === 'UP';
+        const isFlat = data.result === 'FLAT';
+        const colorClass = isUp ? 'from-green-900/90' : (isFlat ? 'from-gray-900/90' : 'from-red-900/90');
+        const textColor = isUp ? 'text-green-400' : (isFlat ? 'text-gray-400' : 'text-red-400');
+        const arrow = isUp ? '\u2191' : (isFlat ? '\u2194' : '\u2193');
+
+        overlay.innerHTML = `
+            <div class="bg-gradient-to-b ${colorClass} to-transparent p-8 rounded-2xl text-center animate-pulse">
+                <div class="text-6xl font-bold ${textColor} mb-2">${arrow} ${data.result}</div>
+                <div class="text-2xl text-white/80 mb-4">$${data.open?.toFixed(2)} \u2192 $${data.close?.toFixed(2)}</div>
+                <div class="text-lg text-white/60">${data.percentChange?.toFixed(2)}% change</div>
+                <div class="mt-4 text-xl text-white/80">
+                    ${data.winners} winner${data.winners !== 1 ? 's' : ''} | ${data.totalPayout?.toFixed(4)} SOL paid
+                </div>
+                ${data.topWinner ? `<div class="mt-2 text-sm text-yellow-400">Top: ${data.topWinner.pubKey} (+${data.topWinner.payout?.toFixed(4)} SOL)</div>` : ''}
+            </div>
+        `;
+
+        document.body.appendChild(overlay);
+
+        // Add screen flash effect
+        const flash = document.createElement('div');
+        flash.className = `fixed inset-0 z-40 pointer-events-none ${isUp ? 'bg-green-500' : (isFlat ? 'bg-gray-500' : 'bg-red-500')} opacity-30`;
+        flash.style.animation = 'fadeOut 0.5s ease-out forwards';
+        document.body.appendChild(flash);
+
+        // Remove after animation
+        setTimeout(() => {
+            overlay.style.opacity = '0';
+            overlay.style.transition = 'opacity 0.5s ease-out';
+            setTimeout(() => {
+                overlay.remove();
+                flash.remove();
+            }, 500);
+        }, 4000);
+    }
+
+    function updateUserPositionDisplay(data) {
+        // Update any user position displays (can be extended based on UI elements)
+        console.log('[UI] Position updated:', data);
+    }
+
+    function showUserFrameResult(data) {
+        // Show personal result notification
+        const toast = document.createElement('div');
+        toast.className = `fixed bottom-20 right-4 z-50 p-4 rounded-lg shadow-lg ${data.userWon ? 'bg-green-900/90 border border-green-500' : 'bg-red-900/90 border border-red-500'}`;
+
+        const profitText = data.profit >= 0 ? `+${data.profit.toFixed(4)}` : data.profit.toFixed(4);
+        const resultEmoji = data.userWon ? '\u{1F389}' : '\u{1F614}';
+
+        toast.innerHTML = `
+            <div class="text-lg font-bold ${data.userWon ? 'text-green-400' : 'text-red-400'}">
+                ${resultEmoji} ${data.userWon ? 'YOU WON!' : 'You Lost'}
+            </div>
+            <div class="text-sm text-white/80 mt-1">
+                Wagered: ${data.wagered?.toFixed(4)} SOL
+            </div>
+            <div class="text-sm ${data.profit >= 0 ? 'text-green-400' : 'text-red-400'} mt-1">
+                Profit: ${profitText} SOL
+            </div>
+            ${data.payout > 0 ? `<div class="text-sm text-yellow-400 mt-1">Payout: ${data.payout?.toFixed(4)} SOL</div>` : ''}
+        `;
+
+        document.body.appendChild(toast);
+
+        // Remove after 6 seconds
+        setTimeout(() => {
+            toast.style.opacity = '0';
+            toast.style.transition = 'opacity 0.5s ease-out';
+            setTimeout(() => toast.remove(), 500);
+        }, 6000);
+    }
+
+    function handleLeaderboardUpdate(data) {
+        // Update leaderboard in UI if element exists
+        const leaderboardEl = document.getElementById('leaderboard-list');
+        if (leaderboardEl && data.leaderboard) {
+            leaderboardEl.innerHTML = data.leaderboard.map((entry, i) => {
+                const isChanged = data.changedPositions?.some(c => c.pubKey === entry.pubKey);
+                const changeInfo = data.changedPositions?.find(c => c.pubKey === entry.pubKey);
+                const changeClass = isChanged ? 'animate-pulse bg-yellow-900/30' : '';
+                const rankIcon = i === 0 ? '\u{1F947}' : i === 1 ? '\u{1F948}' : i === 2 ? '\u{1F949}' : `#${i + 1}`;
+                const dirArrow = changeInfo?.direction === 'up' ? '\u2191' : changeInfo?.direction === 'down' ? '\u2193' : changeInfo?.direction === 'new' ? '\u{1F195}' : '';
+
+                return `
+                    <div class="flex justify-between items-center p-2 rounded ${changeClass}">
+                        <div class="flex items-center gap-2">
+                            <span class="text-xl">${rankIcon}</span>
+                            <span class="text-white/80 font-mono text-sm">${entry.pubKey}</span>
+                            ${dirArrow ? `<span class="text-xs ${changeInfo?.direction === 'up' ? 'text-green-400' : changeInfo?.direction === 'down' ? 'text-red-400' : 'text-blue-400'}">${dirArrow}</span>` : ''}
+                        </div>
+                        <div class="text-right">
+                            <div class="text-green-400 text-sm">${entry.wins}W / ${entry.bets - entry.wins}L</div>
+                            <div class="text-yellow-400 text-xs">${(entry.totalWon || 0).toFixed(2)} SOL</div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        // Show notification for rank changes
+        if (data.changedPositions && data.changedPositions.length > 0) {
+            data.changedPositions.forEach(change => {
+                if (change.direction === 'up') {
+                    console.log(`[Leaderboard] ${change.pubKey} moved up to #${change.newRank}`);
+                }
+            });
+        }
+    }
+
+    function handlePayoutQueueUpdate(data) {
+        // Update queue indicator if element exists
+        const queueIndicator = document.getElementById('payout-queue-indicator');
+        if (queueIndicator) {
+            const statusClass = data.processing ? 'animate-pulse bg-yellow-500' : (data.queueLength > 0 ? 'bg-orange-500' : 'bg-green-500');
+            const statusText = data.processing ? `Processing...` : (data.queueLength > 0 ? `${data.queueLength} pending` : 'Clear');
+            queueIndicator.className = `px-2 py-1 rounded text-xs font-mono ${statusClass}`;
+            queueIndicator.innerText = statusText;
+        }
+
+        // Show toast for successful payouts
+        if (data.lastBatch && data.lastBatch.status === 'success') {
+            const toast = document.createElement('div');
+            toast.className = 'fixed bottom-4 left-4 z-50 p-3 rounded-lg shadow-lg bg-green-900/90 border border-green-500 text-sm';
+            toast.innerHTML = `
+                <div class="text-green-400 font-bold">Payout Sent</div>
+                <div class="text-white/80">${data.lastBatch.recipients} recipient${data.lastBatch.recipients !== 1 ? 's' : ''}</div>
+                <div class="text-yellow-400">${data.lastBatch.totalSOL?.toFixed(4)} SOL</div>
+            `;
+            document.body.appendChild(toast);
+            setTimeout(() => {
+                toast.style.opacity = '0';
+                toast.style.transition = 'opacity 0.5s ease-out';
+                setTimeout(() => toast.remove(), 500);
+            }, 4000);
+        }
+
+        // Update recent payouts list if element exists
+        const recentPayoutsEl = document.getElementById('recent-payouts-list');
+        if (recentPayoutsEl && data.recentPayouts) {
+            recentPayoutsEl.innerHTML = data.recentPayouts.map(p => `
+                <div class="flex justify-between items-center p-2 border-b border-gray-700/50 text-sm">
+                    <div class="text-white/60">${new Date(p.timestamp).toLocaleTimeString()}</div>
+                    <div class="text-green-400">${p.recipients} recipients</div>
+                    <div class="text-yellow-400">${p.totalSOL?.toFixed(4)} SOL</div>
+                </div>
+            `).join('');
+        }
     }
 </script>

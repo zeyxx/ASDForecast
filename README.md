@@ -117,8 +117,8 @@ python3 -m http.server 8080
 
 ## Version
 
-- **Backend**: v150.0
-- **Frontend**: v122.0
+- **Backend**: v151.0
+- **Frontend**: v123.0
 
 ## Security
 
